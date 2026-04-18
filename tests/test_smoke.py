@@ -16,7 +16,7 @@ sys.path.insert(0, ROOT)
 
 import taichi as ti  # noqa: E402
 
-import xpbd_cloth as xc  # noqa: E402
+import xpbd as xc  # noqa: E402
 
 ti.init(arch=ti.cpu, default_fp=ti.f32, log_level=ti.WARN)
 
