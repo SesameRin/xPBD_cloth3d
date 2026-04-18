@@ -1,14 +1,21 @@
 """
 XPBD cloth simulation on CLOTH3D garments, implemented in Taichi.
 
+Features
+--------
 - Loads a CLOTH3D sample through the existing extract_sample_data pipeline.
-- Initializes the garment at frame 0 (already fitted to the body).
+- Supports simulating *all* garments in an outfit simultaneously (e.g. Tshirt
+  + Trousers), with per-garment fabric-aware parameters. Select a subset
+  with `--garments`.
+- Per-fabric XPBD compliance presets (cotton, silk, denim, leather) that
+  match the CLOTH3D fabric tag for each garment. Defaults are tuned to look
+  "cotton-ish" so results line up more closely with a C-IPC cotton baseline.
 - Simulates with XPBD: distance + bending constraints, gravity, and per-vertex
   body collision using the animated SMPL mesh as a moving collider.
-- Renders through Taichi GGUI (falls back to headless mode with --no-gui).
+- Renders through Taichi GGUI (falls back to matplotlib / headless).
 
 Run:
-    python3 xpbd_cloth.py --sample 00016 --garment Tshirt
+    python3 xpbd_cloth.py --sample 07414 --garments all --viewer mpl --save_video
 """
 
 import argparse
@@ -27,24 +34,90 @@ from extract_sample_data import extract_sample_single_frame, reader, get_num_fra
 
 
 # ---------------------------------------------------------------------------
+# Fabric presets
+# ---------------------------------------------------------------------------
+# XPBD compliance α has units of (length² / force) and relates to a Hookean
+# spring stiffness k via α = 1 / (k · dt²) after division by dt² inside the
+# kernel; lower α → stiffer constraint. The values below are hand-tuned to
+# give visually-plausible drape for each CLOTH3D fabric, anchored on cotton.
+#
+#   distance_compliance : in-plane stretch resistance (smaller = stiffer)
+#   bend_compliance     : dihedral/bending resistance (smaller = stiffer)
+#   damping             : per-substep velocity damping (0..1)
+#   density             : areal density hint (kg/m²) — affects particle mass
+#
+# These are the XPBD analogue of the C-IPC cotton/silk/denim/leather material
+# settings used in this repo's comparison runs.
+FABRIC_PRESETS = {
+    "cotton":  dict(distance_compliance=5.0e-9,  bend_compliance=1.0e-5, damping=0.03, density=0.30),
+    "silk":    dict(distance_compliance=2.0e-8,  bend_compliance=5.0e-7, damping=0.01, density=0.10),
+    "denim":   dict(distance_compliance=1.0e-9,  bend_compliance=5.0e-5, damping=0.05, density=0.45),
+    "leather": dict(distance_compliance=5.0e-10, bend_compliance=2.0e-4, damping=0.08, density=0.80),
+}
+# Fallback used when a fabric string is missing or unrecognised.
+DEFAULT_FABRIC = "cotton"
+
+
+def fabric_params(fabric_name):
+    key = (fabric_name or "").lower().strip()
+    return FABRIC_PRESETS.get(key, FABRIC_PRESETS[DEFAULT_FABRIC])
+
+
+# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-def load_sample(sample, garment_name=None, n_body_frames=1):
-    """Return cloth rest + topology, plus a sequence of body meshes."""
+def _parse_garment_list(spec, available):
+    """Interpret --garments flag. Return list of garment names to simulate."""
+    if spec is None or spec.lower() in ("all", "*"):
+        return list(available)
+    names = [s.strip() for s in spec.split(",") if s.strip()]
+    missing = [n for n in names if n not in available]
+    if missing:
+        raise ValueError(
+            f"garments {missing} not in sample (available: {list(available)})"
+        )
+    return names
+
+
+def load_sample(sample, garments_spec=None, n_body_frames=1):
+    """Load one CLOTH3D sample and merge the requested garments into a single
+    cloth system.
+
+    Returns a dict with:
+      V0        (N,3) combined initial vertex positions
+      F         (M,3) combined triangle indices
+      C         (N,3) per-vertex colors in [0,1]
+      vert_gid  (N,) per-vertex garment index into `garment_names`
+      garment_names      list of garment names actually included
+      garment_fabrics    list of fabric strings, one per included garment
+      body_V_seq (T,6890,3) SMPL body vertices for T frames
+      body_F    (NBF,3)
+      sample    str
+    """
     data0 = extract_sample_single_frame(sample, 0, use_uv_map=False, show_display=False)
+    available = list(data0["garment_names"])
+    names = _parse_garment_list(garments_spec, available)
 
-    garment_names = list(data0["garment_names"])
-    if garment_name is None:
-        garment_name = garment_names[0]
-    assert garment_name in garment_names, (
-        f"garment '{garment_name}' not in sample '{sample}' "
-        f"(available: {garment_names})"
-    )
+    V_list, F_list, C_list, gid_list, fabrics = [], [], [], [], []
+    v_offset = 0
+    for gi, name in enumerate(names):
+        key = f"garment_{name}"
+        V = np.asarray(data0[f"{key}_V"], dtype=np.float32)
+        F = np.asarray(data0[f"{key}_F"], dtype=np.int32)
+        C = np.asarray(data0[f"{key}_C"], dtype=np.float32) / 255.0
+        fab = str(data0[f"{key}_fabric"]) if f"{key}_fabric" in data0 else ""
 
-    key = f"garment_{garment_name}"
-    V0 = np.asarray(data0[f"{key}_V"], dtype=np.float32)
-    F = np.asarray(data0[f"{key}_F"], dtype=np.int32)
-    C = np.asarray(data0[f"{key}_C"], dtype=np.float32) / 255.0
+        V_list.append(V)
+        F_list.append(F + v_offset)
+        C_list.append(C)
+        gid_list.append(np.full(V.shape[0], gi, dtype=np.int32))
+        fabrics.append(fab)
+        v_offset += V.shape[0]
+
+    V0 = np.concatenate(V_list, axis=0).astype(np.float32)
+    F = np.concatenate(F_list, axis=0).astype(np.int32)
+    C = np.concatenate(C_list, axis=0).astype(np.float32)
+    vert_gid = np.concatenate(gid_list, axis=0).astype(np.int32)
 
     total_frames = get_num_frames(sample)
     n_body_frames = max(1, min(n_body_frames, total_frames))
@@ -57,7 +130,7 @@ def load_sample(sample, garment_name=None, n_body_frames=1):
             body_F = np.asarray(F_body, dtype=np.int32)
 
     print(
-        f"[data] sample={sample} garment={garment_name} "
+        f"[data] sample={sample} garments={names} fabrics={fabrics} "
         f"cloth_V={V0.shape[0]} cloth_F={F.shape[0]} "
         f"body_V={body_V_seq.shape[1]} body_F={body_F.shape[0]} "
         f"frames={n_body_frames}"
@@ -66,9 +139,11 @@ def load_sample(sample, garment_name=None, n_body_frames=1):
         V0=V0,
         F=F,
         C=C,
+        vert_gid=vert_gid,
+        garment_names=names,
+        garment_fabrics=fabrics,
         body_V_seq=body_V_seq,
         body_F=body_F,
-        garment_name=garment_name,
         sample=sample,
     )
 
@@ -118,6 +193,28 @@ def per_vertex_normals(V, F):
     return vn.astype(np.float32)
 
 
+def compute_vertex_masses(V, F, vert_gid, fabrics):
+    """Areal-density-based per-vertex mass: 1/3 of adjacent triangle area ·
+    fabric density. Returns float32 masses of length V.shape[0]."""
+    tri = V[F]
+    area = 0.5 * np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1
+    )
+    densities = np.array(
+        [fabric_params(f)["density"] for f in fabrics], dtype=np.float32
+    )
+    # density of each triangle = density of garment of its first vertex.
+    tri_density = densities[vert_gid[F[:, 0]]]
+    tri_mass = area * tri_density
+    mass = np.zeros(V.shape[0], dtype=np.float32)
+    third = tri_mass / 3.0
+    np.add.at(mass, F[:, 0], third)
+    np.add.at(mass, F[:, 1], third)
+    np.add.at(mass, F[:, 2], third)
+    mass = np.maximum(mass, 1e-6)
+    return mass.astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # XPBD solver
 # ---------------------------------------------------------------------------
@@ -129,12 +226,14 @@ class XPBDCloth:
         F,
         body_V0,
         body_F,
+        vert_gid=None,
+        garment_fabrics=None,
         dt=1.0 / 60.0,
         substeps=10,
         iterations=5,
-        distance_compliance=1e-8,
-        bend_compliance=5e-6,
-        damping=0.02,
+        dist_compliance_override=None,
+        bend_compliance_override=None,
+        damping_override=None,
         gravity=(0.0, 0.0, -9.81),
         collision_radius=0.01,
     ):
@@ -143,22 +242,61 @@ class XPBDCloth:
         self.NBV = body_V0.shape[0]
         self.NBF = body_F.shape[0]
 
+        if vert_gid is None:
+            vert_gid = np.zeros(self.N, dtype=np.int32)
+        if garment_fabrics is None or len(garment_fabrics) == 0:
+            garment_fabrics = [DEFAULT_FABRIC]
+        self.vert_gid = vert_gid.astype(np.int32)
+        self.fabrics = list(garment_fabrics)
+
         E = build_edges(F)
         BP = build_bending_pairs(F)
         self.NE = E.shape[0]
         self.NB = BP.shape[0]
 
+        # per-garment compliance / damping (with optional global overrides)
+        per_g = [fabric_params(f) for f in self.fabrics]
+        g_dist = np.array(
+            [dist_compliance_override if dist_compliance_override is not None
+             else p["distance_compliance"] for p in per_g],
+            dtype=np.float32,
+        )
+        g_bend = np.array(
+            [bend_compliance_override if bend_compliance_override is not None
+             else p["bend_compliance"] for p in per_g],
+            dtype=np.float32,
+        )
+        g_damp = np.array(
+            [damping_override if damping_override is not None else p["damping"]
+             for p in per_g],
+            dtype=np.float32,
+        )
+
+        # map per-edge and per-bending compliance from garment id of endpoints
+        edge_gid = self.vert_gid[E[:, 0]]
+        dist_compliance_arr = g_dist[edge_gid]
+        bend_gid = self.vert_gid[BP[:, 2]] if self.NB > 0 else np.zeros((0,), dtype=np.int32)
+        bend_compliance_arr = g_bend[bend_gid] if self.NB > 0 else np.zeros((0,), dtype=np.float32)
+        # per-vertex damping (average of garment damping): used in the predict step
+        vert_damping = g_damp[self.vert_gid]
+
+        # masses from areal density
+        mass = compute_vertex_masses(V0, F, self.vert_gid, self.fabrics)
+        w = (1.0 / mass).astype(np.float32)
+
         print(
             f"[solver] N={self.N} NF={self.NF} NE={self.NE} NB={self.NB} "
-            f"body_V={self.NBV} body_F={self.NBF}"
+            f"body_V={self.NBV} body_F={self.NBF} garments={len(self.fabrics)}"
         )
+        for i, f in enumerate(self.fabrics):
+            print(
+                f"         garment[{i}] fabric={f} "
+                f"dist={g_dist[i]:.2e} bend={g_bend[i]:.2e} damp={g_damp[i]:.2f}"
+            )
 
         self.dt = dt
         self.substeps = substeps
         self.iterations = iterations
-        self.distance_compliance = distance_compliance
-        self.bend_compliance = bend_compliance
-        self.damping = damping
         self.gravity = ti.Vector(list(gravity))
         self.collision_radius = collision_radius
 
@@ -167,16 +305,22 @@ class XPBDCloth:
         self.v = ti.Vector.field(3, ti.f32, self.N)
         self.p = ti.Vector.field(3, ti.f32, self.N)
         self.w = ti.field(ti.f32, self.N)
+        self.damp = ti.field(ti.f32, self.N)
 
         # distance constraints
         self.edges = ti.Vector.field(2, ti.i32, self.NE)
         self.rest_len = ti.field(ti.f32, self.NE)
         self.lambda_d = ti.field(ti.f32, self.NE)
+        self.dist_compliance = ti.field(ti.f32, self.NE)
 
         # bending constraints (distance between opposite vertices)
-        self.bend_idx = ti.Vector.field(2, ti.i32, self.NB)
-        self.bend_rest = ti.field(ti.f32, self.NB)
-        self.lambda_b = ti.field(ti.f32, self.NB)
+        # use ti.field with shape max(1, NB) to keep taichi happy for
+        # single-garment/body-free configurations
+        nb = max(1, self.NB)
+        self.bend_idx = ti.Vector.field(2, ti.i32, nb)
+        self.bend_rest = ti.field(ti.f32, nb)
+        self.lambda_b = ti.field(ti.f32, nb)
+        self.bend_compliance = ti.field(ti.f32, nb)
 
         # body
         self.body_x = ti.Vector.field(3, ti.f32, self.NBV)
@@ -187,24 +331,33 @@ class XPBDCloth:
         self.body_face_idx = ti.field(ti.i32, self.NBF * 3)
         self.color = ti.Vector.field(3, ti.f32, self.N)
 
-        self._load_static(V0, F, E, BP, body_V0, body_F)
+        self._load_static(
+            V0, F, E, BP, body_V0, body_F,
+            w, vert_damping, dist_compliance_arr, bend_compliance_arr,
+        )
         self.set_body(body_V0)
 
-    def _load_static(self, V0, F, E, BP, body_V0, body_F):
+    def _load_static(
+        self, V0, F, E, BP, body_V0, body_F,
+        w, vert_damping, dist_compliance_arr, bend_compliance_arr,
+    ):
         V0f = V0.astype(np.float32)
         self.x.from_numpy(V0f)
         self.p.from_numpy(V0f)
         self.v.from_numpy(np.zeros_like(V0f))
-        self.w.from_numpy(np.ones(self.N, dtype=np.float32))
+        self.w.from_numpy(w.astype(np.float32))
+        self.damp.from_numpy(vert_damping.astype(np.float32))
 
         self.edges.from_numpy(E.astype(np.int32))
         rl = np.linalg.norm(V0[E[:, 0]] - V0[E[:, 1]], axis=1).astype(np.float32)
         self.rest_len.from_numpy(rl)
+        self.dist_compliance.from_numpy(dist_compliance_arr.astype(np.float32))
 
         if self.NB > 0:
             self.bend_idx.from_numpy(BP[:, 2:4].astype(np.int32))
             br = np.linalg.norm(V0[BP[:, 2]] - V0[BP[:, 3]], axis=1).astype(np.float32)
             self.bend_rest.from_numpy(br)
+            self.bend_compliance.from_numpy(bend_compliance_arr.astype(np.float32))
 
         self.body_face_idx.from_numpy(body_F.astype(np.int32).flatten())
         self.face_idx.from_numpy(F.astype(np.int32).flatten())
@@ -220,11 +373,11 @@ class XPBDCloth:
 
     # ---- Taichi kernels ----
     @ti.kernel
-    def predict(self, dt: ti.f32, damping: ti.f32):
+    def predict(self, dt: ti.f32):
         g = self.gravity
         for i in self.x:
             if self.w[i] > 0:
-                self.v[i] = self.v[i] * (1.0 - damping) + g * dt
+                self.v[i] = self.v[i] * (1.0 - self.damp[i]) + g * dt
                 self.p[i] = self.x[i] + self.v[i] * dt
             else:
                 self.p[i] = self.x[i]
@@ -237,9 +390,10 @@ class XPBDCloth:
             self.lambda_b[i] = 0.0
 
     @ti.kernel
-    def solve_distance(self, dt: ti.f32, compliance: ti.f32):
-        alpha = compliance / (dt * dt)
+    def solve_distance(self, dt: ti.f32):
+        inv_dt2 = 1.0 / (dt * dt)
         for e in self.edges:
+            alpha = self.dist_compliance[e] * inv_dt2
             i = self.edges[e][0]
             j = self.edges[e][1]
             wi = self.w[i]
@@ -258,9 +412,10 @@ class XPBDCloth:
                 self.p[j] -= wj * dp
 
     @ti.kernel
-    def solve_bending(self, dt: ti.f32, compliance: ti.f32):
-        alpha = compliance / (dt * dt)
+    def solve_bending(self, dt: ti.f32):
+        inv_dt2 = 1.0 / (dt * dt)
         for b in self.bend_idx:
+            alpha = self.bend_compliance[b] * inv_dt2
             i = self.bend_idx[b][0]
             j = self.bend_idx[b][1]
             wi = self.w[i]
@@ -310,12 +465,12 @@ class XPBDCloth:
     def step(self):
         sub_dt = self.dt / self.substeps
         for _ in range(self.substeps):
-            self.predict(sub_dt, self.damping)
+            self.predict(sub_dt)
             self.reset_lambdas()
             for _ in range(self.iterations):
-                self.solve_distance(sub_dt, self.distance_compliance)
+                self.solve_distance(sub_dt)
                 if self.NB > 0:
-                    self.solve_bending(sub_dt, self.bend_compliance)
+                    self.solve_bending(sub_dt)
                 self.solve_collision(self.collision_radius)
             self.finalize(sub_dt)
 
@@ -323,6 +478,11 @@ class XPBDCloth:
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
+def _video_stem(data):
+    tag = "+".join(data["garment_names"]) if data["garment_names"] else "cloth"
+    return f"{data['sample']}_{tag}"
+
+
 def run_matplotlib(cloth, data, args):
     """Matplotlib 3D animation fallback (works without Vulkan / in WSL)."""
     import matplotlib.pyplot as plt
@@ -346,7 +506,11 @@ def run_matplotlib(cloth, data, args):
     ax.set_zlim(bb_min[2], bb_max[2])
     ax.set_box_aspect((bb_max - bb_min))
     ax.view_init(elev=10, azim=-70)
-    ax.set_title(f"XPBD cloth — sample {data['sample']} / {data['garment_name']}")
+    title = (
+        f"XPBD cloth — sample {data['sample']} / "
+        f"{'+'.join(data['garment_names'])}"
+    )
+    ax.set_title(title)
 
     body_coll = Poly3DCollection(body_frames[0][F_body],
                                  facecolor=(0.85, 0.72, 0.60, 0.25),
@@ -388,8 +552,7 @@ def run_matplotlib(cloth, data, args):
             from matplotlib.animation import PillowWriter
             writer = PillowWriter(fps=20)
             ext = ".gif"
-        out = os.path.join(args.out,
-                           f"{data['sample']}_{data['garment_name']}{ext}")
+        out = os.path.join(args.out, f"{_video_stem(data)}{ext}")
         print(f"[mpl] saving animation to {out}")
         anim.save(out, writer=writer, dpi=110)
     else:
@@ -436,7 +599,6 @@ def run_gui(cloth, data, args):
                 show_body = not show_body
 
         if not paused:
-            # animate body if we have multiple frames
             if n_body_frames > 1:
                 bf = step_idx % n_body_frames
                 cloth.set_body(body_frames[bf])
@@ -475,12 +637,13 @@ def run_headless(cloth, data, args):
     os.makedirs(args.out, exist_ok=True)
     body_frames = data["body_V_seq"]
     n_body_frames = body_frames.shape[0]
+    stem = _video_stem(data)
     for i in range(args.steps):
         if n_body_frames > 1:
             cloth.set_body(body_frames[i % n_body_frames])
         cloth.step()
         if i % args.save_every == 0:
-            np.save(os.path.join(args.out, f"cloth_{i:05d}.npy"),
+            np.save(os.path.join(args.out, f"{stem}_{i:05d}.npy"),
                     cloth.x.to_numpy())
             print(f"  step {i}/{args.steps}")
     print("[headless] done.")
@@ -492,16 +655,33 @@ def run_headless(cloth, data, args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sample", default="00016")
-    p.add_argument("--garment", default=None, help="garment name, e.g. Tshirt")
+    p.add_argument(
+        "--garments", default="all",
+        help="comma-separated garment names, or 'all'. "
+             "Example: --garments Tshirt,Trousers",
+    )
+    p.add_argument(
+        "--garment", default=None,
+        help="[deprecated] single-garment alias for --garments",
+    )
+    p.add_argument(
+        "--force_fabric", default=None,
+        choices=sorted(FABRIC_PRESETS.keys()) + [None],
+        help="override fabric for ALL garments (e.g. cotton). Useful for "
+             "matching a C-IPC baseline that uses a single material.",
+    )
     p.add_argument("--arch", default="cpu", choices=["cpu", "gpu", "vulkan"])
     p.add_argument("--body_frames", type=int, default=1,
                    help="number of body frames to animate; 1 = static")
     p.add_argument("--dt", type=float, default=1.0 / 60.0)
     p.add_argument("--substeps", type=int, default=10)
     p.add_argument("--iters", type=int, default=5)
-    p.add_argument("--dist_compliance", type=float, default=1e-8)
-    p.add_argument("--bend_compliance", type=float, default=5e-6)
-    p.add_argument("--damping", type=float, default=0.02)
+    p.add_argument("--dist_compliance", type=float, default=None,
+                   help="override per-garment distance compliance")
+    p.add_argument("--bend_compliance", type=float, default=None,
+                   help="override per-garment bending compliance")
+    p.add_argument("--damping", type=float, default=None,
+                   help="override per-garment damping")
     p.add_argument("--collision_radius", type=float, default=0.01)
     p.add_argument("--viewer", default="auto",
                    choices=["auto", "ggui", "mpl", "none"],
@@ -517,21 +697,32 @@ def main():
     if args.no_gui:
         args.viewer = "none"
 
+    # back-compat: --garment takes precedence if explicitly passed
+    garments_spec = args.garment if args.garment else args.garments
+
     arch_map = {"cpu": ti.cpu, "gpu": ti.gpu, "vulkan": ti.vulkan}
     ti.init(arch=arch_map[args.arch], default_fp=ti.f32)
 
-    data = load_sample(args.sample, args.garment, n_body_frames=args.body_frames)
+    data = load_sample(args.sample, garments_spec, n_body_frames=args.body_frames)
+
+    fabrics = data["garment_fabrics"]
+    if args.force_fabric:
+        fabrics = [args.force_fabric] * len(fabrics)
+        print(f"[solver] forcing fabric={args.force_fabric} on all garments")
+
     cloth = XPBDCloth(
         V0=data["V0"],
         F=data["F"],
         body_V0=data["body_V_seq"][0],
         body_F=data["body_F"],
+        vert_gid=data["vert_gid"],
+        garment_fabrics=fabrics,
         dt=args.dt,
         substeps=args.substeps,
         iterations=args.iters,
-        distance_compliance=args.dist_compliance,
-        bend_compliance=args.bend_compliance,
-        damping=args.damping,
+        dist_compliance_override=args.dist_compliance,
+        bend_compliance_override=args.bend_compliance,
+        damping_override=args.damping,
         collision_radius=args.collision_radius,
     )
     cloth.set_color(data["C"])

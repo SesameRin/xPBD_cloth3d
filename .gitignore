@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# transient simulation dumps; keep mp4 demos in xpbd_out/
+xpbd_out/*.npy
