@@ -6,7 +6,13 @@
       "Bash(pip3 list *)",
       "Bash(pip3 install *)",
       "Bash(python3 *)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(gh auth *)"
     ]
   }
 }
