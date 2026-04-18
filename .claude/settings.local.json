@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(py|md|txt|sh|json\\)$\")",
+      "Bash(python3 -c \"import taichi; print\\(taichi.__version__\\)\")",
+      "Bash(pip3 list *)",
+      "Bash(pip3 install *)",
+      "Bash(python3 *)",
+      "Bash(echo \"exit=$?\")"
+    ]
+  }
+}
