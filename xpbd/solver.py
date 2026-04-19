@@ -15,6 +15,14 @@ Each per-edge / per-bend pair carries its own compliance (so a multi-fabric
 outfit just works), and per-vertex damping comes from the owning garment.
 See `xpbd.fabrics` for the parameter table and `docs/xpbd_method.md` for
 the math.
+
+GPU-safe mode (`gpu_safe=True`, selected automatically by the CLI for
+`--arch gpu` / `--arch vulkan`): the distance edge list and bending pair
+list are reordered by a greedy graph coloring so that within one color
+class no two constraints share a vertex. `step()` then issues one kernel
+launch per color, giving race-free parallel writes on GPU while still
+being pure Gauss-Seidel across colors. CPU (`gpu_safe=False`) keeps the
+original single-launch kernel bit-identical to before.
 """
 
 import numpy as np
@@ -25,6 +33,7 @@ from .geometry import (
     build_edges,
     build_bending_pairs,
     compute_vertex_masses,
+    greedy_pair_coloring,
     per_vertex_normals,
 )
 
@@ -47,6 +56,7 @@ class XPBDCloth:
         damping_override=None,
         gravity=(0.0, 0.0, -9.81),
         collision_radius=0.01,
+        gpu_safe=False,
     ):
         self.N = V0.shape[0]
         self.NF = F.shape[0]
@@ -64,6 +74,37 @@ class XPBDCloth:
         BP = build_bending_pairs(F)
         self.NE = E.shape[0]
         self.NB = BP.shape[0]
+
+        # Graph coloring for GPU-safe parallel constraint solves.
+        # Reorder E and BP so that edges/bending pairs within one color
+        # class touch disjoint vertices. All per-edge / per-bend arrays
+        # (rest length, compliance, etc.) are derived AFTER this reorder,
+        # so they stay consistent with the Taichi edge/bend indices.
+        self.gpu_safe = bool(gpu_safe)
+        if self.gpu_safe and self.NE > 0:
+            ec, n_ec = greedy_pair_coloring(E, self.N)
+            order = np.argsort(ec, kind="stable")
+            E = E[order]
+            counts = np.bincount(ec[order], minlength=n_ec).astype(np.int32)
+            self.edge_color_offsets_np = np.concatenate(
+                ([0], np.cumsum(counts))
+            ).astype(np.int32)
+            self.n_edge_colors = int(n_ec)
+        else:
+            self.edge_color_offsets_np = np.array([0, self.NE], dtype=np.int32)
+            self.n_edge_colors = 1 if self.NE > 0 else 0
+        if self.gpu_safe and self.NB > 0:
+            bc, n_bc = greedy_pair_coloring(BP[:, 2:4], self.N)
+            order = np.argsort(bc, kind="stable")
+            BP = BP[order]
+            counts = np.bincount(bc[order], minlength=n_bc).astype(np.int32)
+            self.bend_color_offsets_np = np.concatenate(
+                ([0], np.cumsum(counts))
+            ).astype(np.int32)
+            self.n_bend_colors = int(n_bc)
+        else:
+            self.bend_color_offsets_np = np.array([0, self.NB], dtype=np.int32)
+            self.n_bend_colors = 1 if self.NB > 0 else 0
 
         # Per-garment compliance / damping, with optional global overrides.
         per_g = [fabric_params(f) for f in self.fabrics]
@@ -104,6 +145,12 @@ class XPBDCloth:
             f"[solver] N={self.N} NF={self.NF} NE={self.NE} NB={self.NB} "
             f"body_V={self.NBV} body_F={self.NBF} garments={len(self.fabrics)}"
         )
+        if self.gpu_safe:
+            print(
+                f"         gpu_safe=on  edge_colors={self.n_edge_colors} "
+                f"bend_colors={self.n_bend_colors} "
+                f"(Gauss-Seidel, race-free within each color)"
+            )
         for i, f in enumerate(self.fabrics):
             print(
                 f"         garment[{i}] fabric={f} "
@@ -249,6 +296,52 @@ class XPBDCloth:
                 self.p[i] += wi * dp
                 self.p[j] -= wj * dp
 
+    # --- GPU-safe variants: one top-level parallel loop over a single
+    # color class. Within a color, no two edges/pairs share a vertex, so
+    # the in-place writes are race-free. Called one-per-color from
+    # `step()` when `gpu_safe=True`. Bodies mirror the full kernels above.
+    @ti.kernel
+    def solve_distance_range(self, dt: ti.f32, start: ti.i32, end: ti.i32):
+        inv_dt2 = 1.0 / (dt * dt)
+        for e in range(start, end):
+            alpha = self.dist_compliance[e] * inv_dt2
+            i = self.edges[e][0]
+            j = self.edges[e][1]
+            wi = self.w[i]
+            wj = self.w[j]
+            wsum = wi + wj
+            if wsum > 0:
+                d = self.p[i] - self.p[j]
+                L = d.norm(1e-8)
+                n = d / L
+                C = L - self.rest_len[e]
+                dlambda = (-C - alpha * self.lambda_d[e]) / (wsum + alpha)
+                self.lambda_d[e] += dlambda
+                dp = dlambda * n
+                self.p[i] += wi * dp
+                self.p[j] -= wj * dp
+
+    @ti.kernel
+    def solve_bending_range(self, dt: ti.f32, start: ti.i32, end: ti.i32):
+        inv_dt2 = 1.0 / (dt * dt)
+        for b in range(start, end):
+            alpha = self.bend_compliance[b] * inv_dt2
+            i = self.bend_idx[b][0]
+            j = self.bend_idx[b][1]
+            wi = self.w[i]
+            wj = self.w[j]
+            wsum = wi + wj
+            if wsum > 0:
+                d = self.p[i] - self.p[j]
+                L = d.norm(1e-8)
+                n = d / L
+                C = L - self.bend_rest[b]
+                dlambda = (-C - alpha * self.lambda_b[b]) / (wsum + alpha)
+                self.lambda_b[b] += dlambda
+                dp = dlambda * n
+                self.p[i] += wi * dp
+                self.p[j] -= wj * dp
+
     @ti.kernel
     def solve_collision(self, radius: ti.f32):
         # Per cloth vertex: find nearest body vertex and push outside its
@@ -278,6 +371,22 @@ class XPBDCloth:
                 self.v[i] = (self.p[i] - self.x[i]) * inv_dt
                 self.x[i] = self.p[i]
 
+    def _solve_distance_colored(self, dt):
+        off = self.edge_color_offsets_np
+        for c in range(self.n_edge_colors):
+            s = int(off[c])
+            e = int(off[c + 1])
+            if e > s:
+                self.solve_distance_range(dt, s, e)
+
+    def _solve_bending_colored(self, dt):
+        off = self.bend_color_offsets_np
+        for c in range(self.n_bend_colors):
+            s = int(off[c])
+            e = int(off[c + 1])
+            if e > s:
+                self.solve_bending_range(dt, s, e)
+
     # ----------------------------------------------------------------- step
     def step(self):
         sub_dt = self.dt / self.substeps
@@ -285,8 +394,13 @@ class XPBDCloth:
             self.predict(sub_dt)
             self.reset_lambdas()
             for _ in range(self.iterations):
-                self.solve_distance(sub_dt)
-                if self.NB > 0:
-                    self.solve_bending(sub_dt)
+                if self.gpu_safe:
+                    self._solve_distance_colored(sub_dt)
+                    if self.NB > 0:
+                        self._solve_bending_colored(sub_dt)
+                else:
+                    self.solve_distance(sub_dt)
+                    if self.NB > 0:
+                        self.solve_bending(sub_dt)
                 self.solve_collision(self.collision_radius)
             self.finalize(sub_dt)

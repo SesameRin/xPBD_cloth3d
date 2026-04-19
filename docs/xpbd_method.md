@@ -96,9 +96,33 @@ Effect of α:
 - in this code each *edge* reads its own α from `dist_compliance[e]`,
   set per-garment by `XPBDCloth.__init__` and `xpbd/fabrics.py`.
 
-The kernel writes `pᵢ` and `pⱼ` without atomics. PBD/XPBD is iterative
-and forgiving; tiny race conditions wash out across iterations and are a
-standard simplification in research-grade Taichi cloth code.
+The kernel writes `pᵢ` and `pⱼ` with Taichi's default auto-atomic `+=`,
+so no write is ever lost. The remaining racy part is the **read** of
+`pᵢ` / `pⱼ` at the top of the loop body: concurrent threads computing a
+constraint that shares a vertex may observe a stale position. On CPU
+(≤ ~8 concurrent threads) this is rare and benign; PBD/XPBD is iterative
+and the transient error washes out.
+
+On GPU, though, every edge is in flight simultaneously, so a vertex
+touched by N edges receives N corrections computed from the *same* stale
+`p[i]`. For stiff materials (silk: α ≈ 2·10⁻⁸) the summed over-correction
+is large enough to oscillate and diverge within one frame, sending the
+cloth to NaN — that's why `--arch gpu` used to "lose" the garments.
+
+**Fix (GPU-safe mode):** greedy **graph coloring** of distance edges and
+bending pairs (`xpbd/geometry.py: greedy_pair_coloring`). Within one
+color class no two constraints share a vertex, so parallel threads write
+to disjoint entries of `p` — zero races. The solver launches one kernel
+per color; across colors the loop is sequential, so the overall scheme
+is still Gauss–Seidel (just in a specific order rather than the
+arbitrary edge-list order CPU uses). This preserves the XPBD math and
+convergence target: compare a CPU run vs a GPU run frame-by-frame and
+you see a few mm of transient drift that doesn't diverge.
+
+Typical cloth meshes here color into ~10–12 classes, which with
+5 iterations × 10 substeps is ≈ 500 kernel launches per frame — fine on
+a modern GPU. Enabled automatically by `--arch gpu` / `--arch vulkan`;
+CPU (`--arch cpu`) keeps the original single-launch kernel untouched.
 
 ## 4. Bending constraints
 

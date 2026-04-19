@@ -90,6 +90,7 @@ def main(argv=None):
         bend_compliance_override=args.bend_compliance,
         damping_override=args.damping,
         collision_radius=args.collision_radius,
+        gpu_safe=(args.arch != "cpu"),
     )
     cloth.set_color(data["C"])
 

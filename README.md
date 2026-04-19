@@ -52,7 +52,7 @@ include every simulated garment, e.g. `07414_Trousers+Tshirt.mp4`.
 | `--body_frames` | `1` | >1 animates the body collider over the first N frames |
 | `--viewer` | `auto` | `auto` / `ggui` / `mpl` / `none` |
 | `--save_video` | off | with `--viewer mpl`, render mp4 (or gif fallback) |
-| `--arch` | `cpu` | Taichi backend (`cpu`, `gpu`, `vulkan`) |
+| `--arch` | `cpu` | Taichi backend (`cpu`, `gpu`, `vulkan`). Non-cpu backends auto-enable GPU-safe graph-colored constraint solves — see [`docs/xpbd_method.md`](docs/xpbd_method.md) §3. |
 | `--dt` | `1/60` | frame step |
 | `--substeps` | `10` | XPBD substeps per frame |
 | `--iters` | `5` | constraint iterations per substep |

@@ -39,6 +39,11 @@ Pure NumPy helpers. Run **once** at setup, never in the hot loop:
 - `build_edges(F)` — unique undirected edge list from a triangle list.
 - `build_bending_pairs(F)` — for each shared edge between two triangles,
   return the two opposite vertices used by the PBD bending shortcut.
+- `greedy_pair_coloring(pairs, n_vertices)` — greedy graph coloring of
+  edges / bending pairs so that within one color class no two
+  constraints share a vertex. Only used when `XPBDCloth(gpu_safe=True)`,
+  to make parallel constraint writes race-free on GPU. See
+  `docs/xpbd_method.md` §3 for why.
 - `per_vertex_normals(V, F)` — area-weighted vertex normals for the
   body collider.
 - `compute_vertex_masses(V, F, vert_gid, fabrics)` — per-vertex mass from
@@ -63,6 +68,17 @@ every requested garment into a single `(V, F, C)` and remembers a
 The hot loop is `step()` → `[predict → reset_lambdas → (solve_distance,
 solve_bending, solve_collision) × iterations → finalize] × substeps`.
 Each subloop op is a `@ti.kernel`. See `docs/xpbd_method.md` for the math.
+
+`XPBDCloth(gpu_safe=True)` (set automatically when `--arch gpu` /
+`--arch vulkan`) switches `solve_distance` and `solve_bending` to their
+colored variants: edges/bending pairs are pre-sorted by a greedy vertex
+coloring, and `step()` issues one kernel launch per color class. Within
+a color class all threads touch disjoint vertices, so Taichi's auto-
+atomic `+=` is actually race-free even on CUDA. Across color classes
+the launches are sequential, so the overall scheme is still Gauss–
+Seidel. CPU (`gpu_safe=False`) keeps the original single-launch
+kernels, bit-identical to the pre-GPU implementation. The coloring +
+kernel pair both live in `xpbd.solver`.
 
 ### `xpbd.viewers`
 Three rendering back-ends sharing one signature `(cloth, data, args)`:

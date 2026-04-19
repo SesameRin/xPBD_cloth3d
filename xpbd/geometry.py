@@ -43,6 +43,37 @@ def build_bending_pairs(F):
     return np.array(pairs, dtype=np.int32)
 
 
+def greedy_pair_coloring(pairs, n_vertices):
+    """Greedy coloring so that no two pairs in the same color share a vertex.
+
+    Given `pairs` of shape (K, 2) (distance edges or bending pair
+    endpoints), assign each pair a color such that within one color class
+    every vertex index appears at most once. This lets the XPBD
+    constraint solve run safely in parallel on GPU: threads in the same
+    color touch disjoint vertices, so the in-place writes
+    `p[i] += ...` / `p[j] -= ...` cannot race.
+
+    Returns `(color, n_colors)`. `color[k]` is the color of `pairs[k]`.
+    Typical cloth meshes need only 6-10 colors.
+    """
+    n = int(pairs.shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=np.int32), 0
+    color = np.full(n, -1, dtype=np.int32)
+    vert_used = [set() for _ in range(int(n_vertices))]
+    for k in range(n):
+        i = int(pairs[k, 0])
+        j = int(pairs[k, 1])
+        used = vert_used[i] | vert_used[j]
+        c = 0
+        while c in used:
+            c += 1
+        color[k] = c
+        vert_used[i].add(c)
+        vert_used[j].add(c)
+    return color, int(color.max()) + 1
+
+
 def per_vertex_normals(V, F):
     """Area-weighted per-vertex normals for collision pushout."""
     tri = V[F]

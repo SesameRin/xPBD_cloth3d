@@ -21,6 +21,7 @@ load CLOTH3D    ───►│ xpbd/data.py           load_sample          │
 construct solver ──►│ xpbd/solver.py         XPBDCloth.__init__   │
                     │  ├── geometry.build_edges                   │
                     │  ├── geometry.build_bending_pairs           │
+                    │  ├── geometry.greedy_pair_coloring (GPU)    │
                     │  ├── geometry.compute_vertex_masses         │
                     │  ├── fabrics.fabric_params per garment      │
                     │  └── allocate Taichi fields, upload static  │
