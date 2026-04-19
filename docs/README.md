@@ -12,6 +12,7 @@ top-level `README.md` is the cheat-sheet; this folder is the deep dive.
 | [`fabric_presets.md`](fabric_presets.md) | What each fabric's compliance / damping / density values mean and how to pick / tune them. |
 | [`viewers.md`](viewers.md) | The three viewer back-ends (GGUI, matplotlib, headless) and when to use each. |
 | [`cipc_comparison.md`](cipc_comparison.md) | The recipe for a like-for-like comparison run against the C-IPC cotton baseline. |
+| [`gpu_performance.md`](gpu_performance.md) | What `--arch gpu` does (Taichi CUDA), the GPU race-condition fix, and CPU vs GPU benchmark numbers. |
 
 Suggested reading order if this is your first time:
 

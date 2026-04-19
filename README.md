@@ -26,8 +26,7 @@ Bundled samples: `00016`, `01691`, `03543`, `06840`, `07414`.
 python3 xpbd_cloth.py --sample 07414 --garments all --body_frames 60
 
 # Single garment, save an mp4
-python3 xpbd_cloth.py --sample 00016 --garments Tshirt \
-    --viewer mpl --save_video --body_frames 60 --steps 60
+python3 xpbd_cloth.py --sample 00016 --garments Tshirt --viewer mpl --save_video --body_frames 60 --steps 60
 
 # Match the C-IPC cotton baseline (force every garment to cotton)
 python3 xpbd_cloth.py --sample 07414 --garments all --force_fabric cotton \
@@ -105,3 +104,8 @@ For more, read [`docs/architecture.md`](docs/architecture.md).
 - Cloth starts from the dataset's frame-0 draped pose (already
   body-fitted). For a "drop from flat" experiment, swap `_V` →
   `_V_rest` in `xpbd/data.py`.
+- `--arch gpu` uses Taichi's CUDA backend. The solver prints per-stage
+  timing at the end of each run. See
+  [`docs/gpu_performance.md`](docs/gpu_performance.md) for the CPU vs
+  GPU numbers on this workload and the Jacobi-with-valence-scaling
+  fix that was needed to make the GPU path stable for stiff fabrics.

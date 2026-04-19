@@ -12,7 +12,9 @@
       "Bash(git rm *)",
       "Bash(git commit *)",
       "Bash(git push *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(nvidia-smi)",
+      "Bash(ffprobe -v error -show_entries stream=width,height,duration -of csv=s=x:p=0 xpbd_out/03543_Dress_gpu.mp4)"
     ]
   }
 }

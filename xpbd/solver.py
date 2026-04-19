@@ -15,7 +15,16 @@ Each per-edge / per-bend pair carries its own compliance (so a multi-fabric
 outfit just works), and per-vertex damping comes from the owning garment.
 See `xpbd.fabrics` for the parameter table and `docs/xpbd_method.md` for
 the math.
+
+Iteration scheme: Jacobi-style. Distance and bending constraints accumulate
+corrections into a separate `dp` buffer with atomic adds, then a follow-up
+kernel flushes `dp` into `p`. This is required for GPU correctness — with
+thousands of concurrent threads, the naive "write p in place" has a
+read-before-write race that explodes for stiff materials (silk dist=2e-8).
+CPU (8 threads) mostly gets away with it; CUDA does not.
 """
+
+import time
 
 import numpy as np
 import taichi as ti
@@ -64,6 +73,22 @@ class XPBDCloth:
         BP = build_bending_pairs(F)
         self.NE = E.shape[0]
         self.NB = BP.shape[0]
+
+        # Per-vertex constraint valence — used to under-relax Jacobi updates
+        # so parallel constraint solves (GPU) don't diverge on stiff materials.
+        edge_val = np.bincount(E.flatten(), minlength=self.N).astype(np.float32)
+        if self.NB > 0:
+            bend_val = np.bincount(
+                BP[:, 2:4].flatten(), minlength=self.N
+            ).astype(np.float32)
+        else:
+            bend_val = np.zeros(self.N, dtype=np.float32)
+        self.inv_edge_val = np.where(edge_val > 0, 1.0 / edge_val, 0.0).astype(
+            np.float32
+        )
+        self.inv_bend_val = np.where(bend_val > 0, 1.0 / bend_val, 0.0).astype(
+            np.float32
+        )
 
         # Per-garment compliance / damping, with optional global overrides.
         per_g = [fabric_params(f) for f in self.fabrics]
@@ -120,8 +145,14 @@ class XPBDCloth:
         self.x = ti.Vector.field(3, ti.f32, self.N)
         self.v = ti.Vector.field(3, ti.f32, self.N)
         self.p = ti.Vector.field(3, ti.f32, self.N)
+        self.dp = ti.Vector.field(3, ti.f32, self.N)  # Jacobi delta buffer
         self.w = ti.field(ti.f32, self.N)
         self.damp = ti.field(ti.f32, self.N)
+        # Per-vertex Jacobi scaling. Vertex i is touched by inv_edge_val[i]^-1
+        # distance edges and inv_bend_val[i]^-1 bending pairs; dividing each
+        # contribution keeps parallel accumulation stable for stiff fabrics.
+        self.inv_edge_val_fld = ti.field(ti.f32, self.N)
+        self.inv_bend_val_fld = ti.field(ti.f32, self.N)
 
         # distance constraints
         self.edges = ti.Vector.field(2, ti.i32, self.NE)
@@ -150,6 +181,7 @@ class XPBDCloth:
             w, vert_damping, dist_compliance_arr, bend_compliance_arr,
         )
         self.set_body(body_V0)
+        self.reset_timing()
 
     # ------------------------------------------------------------------ setup
     def _load_static(
@@ -162,6 +194,8 @@ class XPBDCloth:
         self.v.from_numpy(np.zeros_like(V0f))
         self.w.from_numpy(w.astype(np.float32))
         self.damp.from_numpy(vert_damping.astype(np.float32))
+        self.inv_edge_val_fld.from_numpy(self.inv_edge_val)
+        self.inv_bend_val_fld.from_numpy(self.inv_bend_val)
 
         self.edges.from_numpy(E.astype(np.int32))
         rl = np.linalg.norm(V0[E[:, 0]] - V0[E[:, 1]], axis=1).astype(np.float32)
@@ -207,6 +241,18 @@ class XPBDCloth:
             self.lambda_b[i] = 0.0
 
     @ti.kernel
+    def clear_dp(self):
+        for i in self.dp:
+            self.dp[i] = ti.Vector([0.0, 0.0, 0.0])
+
+    @ti.kernel
+    def apply_dp(self):
+        # Flush Jacobi delta buffer into p. One thread per vertex, no race.
+        for i in self.p:
+            self.p[i] += self.dp[i]
+            self.dp[i] = ti.Vector([0.0, 0.0, 0.0])
+
+    @ti.kernel
     def solve_distance(self, dt: ti.f32):
         inv_dt2 = 1.0 / (dt * dt)
         for e in self.edges:
@@ -223,10 +269,11 @@ class XPBDCloth:
                 C = L - self.rest_len[e]
                 dlambda = (-C - alpha * self.lambda_d[e]) / (wsum + alpha)
                 self.lambda_d[e] += dlambda
-                dp = dlambda * n
-                # Unsynchronised writes are fine at this scale (PBD is iterative).
-                self.p[i] += wi * dp
-                self.p[j] -= wj * dp
+                dpv = dlambda * n
+                # Jacobi: scale per vertex by 1/valence so summed parallel
+                # contributions match one-at-a-time Gauss-Seidel magnitude.
+                self.dp[i] += wi * dpv * self.inv_edge_val_fld[i]
+                self.dp[j] -= wj * dpv * self.inv_edge_val_fld[j]
 
     @ti.kernel
     def solve_bending(self, dt: ti.f32):
@@ -245,9 +292,9 @@ class XPBDCloth:
                 C = L - self.bend_rest[b]
                 dlambda = (-C - alpha * self.lambda_b[b]) / (wsum + alpha)
                 self.lambda_b[b] += dlambda
-                dp = dlambda * n
-                self.p[i] += wi * dp
-                self.p[j] -= wj * dp
+                dpv = dlambda * n
+                self.dp[i] += wi * dpv * self.inv_bend_val_fld[i]
+                self.dp[j] -= wj * dpv * self.inv_bend_val_fld[j]
 
     @ti.kernel
     def solve_collision(self, radius: ti.f32):
@@ -281,12 +328,52 @@ class XPBDCloth:
     # ----------------------------------------------------------------- step
     def step(self):
         sub_dt = self.dt / self.substeps
+        t = self.timing
+        _p = time.perf_counter
         for _ in range(self.substeps):
+            ti.sync()
+            t0 = _p()
             self.predict(sub_dt)
             self.reset_lambdas()
+            self.clear_dp()
+            ti.sync()
+            t1 = _p()
             for _ in range(self.iterations):
                 self.solve_distance(sub_dt)
+                self.apply_dp()
                 if self.NB > 0:
                     self.solve_bending(sub_dt)
+                    self.apply_dp()
                 self.solve_collision(self.collision_radius)
+            ti.sync()
+            t2 = _p()
             self.finalize(sub_dt)
+            ti.sync()
+            t3 = _p()
+            t["predict"] += t1 - t0
+            t["solve"]   += t2 - t1
+            t["finalize"]+= t3 - t2
+        t["steps"] += 1
+
+    # ----------------------------------------------------------------- stats
+    def reset_timing(self):
+        self.timing = dict(predict=0.0, solve=0.0, finalize=0.0, steps=0)
+
+    def timing_report(self):
+        t = self.timing
+        n = max(1, t["steps"])
+        total = t["predict"] + t["solve"] + t["finalize"]
+        lines = [
+            f"[timing] {n} frames   total {total:.2f}s   "
+            f"{total / n * 1000:.1f} ms/frame   "
+            f"{n / total if total > 0 else 0:.1f} FPS",
+            f"         predict  {t['predict']:.2f}s  "
+            f"({t['predict']/n*1000:.2f} ms/frame)",
+            f"         solve    {t['solve']:.2f}s  "
+            f"({t['solve']/n*1000:.2f} ms/frame)   "
+            f"[dist+bend+coll × {self.iterations} iters × "
+            f"{self.substeps} substeps]",
+            f"         finalize {t['finalize']:.2f}s  "
+            f"({t['finalize']/n*1000:.2f} ms/frame)",
+        ]
+        return "\n".join(lines)

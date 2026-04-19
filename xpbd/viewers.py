@@ -80,6 +80,8 @@ def run_matplotlib(cloth, data, args):
             )
         return cloth_coll, body_coll
 
+    cloth.reset_timing()
+    wall_t0 = time.perf_counter()
     anim = FuncAnimation(fig, update, frames=args.steps, interval=30, blit=False)
     if args.save_video:
         os.makedirs(args.out, exist_ok=True)
@@ -98,12 +100,19 @@ def run_matplotlib(cloth, data, args):
 
             writer = PillowWriter(fps=20)
             ext = ".gif"
-        out = os.path.join(args.out, f"{video_stem(data)}{ext}")
+        stem = video_stem(data)
+        if getattr(args, "arch", "cpu") != "cpu":
+            stem = f"{stem}_{args.arch}"
+        out = os.path.join(args.out, f"{stem}{ext}")
         print(f"[mpl] saving animation to {out}")
         anim.save(out, writer=writer, dpi=110)
     else:
         plt.tight_layout()
         plt.show()
+    wall = time.perf_counter() - wall_t0
+    print(cloth.timing_report())
+    print(f"[timing] wall-clock incl. rendering: {wall:.2f}s "
+          f"({wall / max(1, args.steps) * 1000:.1f} ms/frame)")
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +202,8 @@ def run_headless(cloth, data, args):
     body_frames = data["body_V_seq"]
     n_body_frames = body_frames.shape[0]
     stem = video_stem(data)
+    cloth.reset_timing()
+    wall_t0 = time.perf_counter()
     for i in range(args.steps):
         if n_body_frames > 1:
             cloth.set_body(body_frames[i % n_body_frames])
@@ -203,4 +214,8 @@ def run_headless(cloth, data, args):
                 cloth.x.to_numpy(),
             )
             print(f"  step {i}/{args.steps}")
+    wall = time.perf_counter() - wall_t0
     print("[headless] done.")
+    print(cloth.timing_report())
+    print(f"[timing] wall-clock: {wall:.2f}s "
+          f"({wall / max(1, args.steps) * 1000:.1f} ms/frame)")
