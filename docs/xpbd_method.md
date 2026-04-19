@@ -96,9 +96,14 @@ Effect of α:
 - in this code each *edge* reads its own α from `dist_compliance[e]`,
   set per-garment by `XPBDCloth.__init__` and `xpbd/fabrics.py`.
 
-The kernel writes `pᵢ` and `pⱼ` without atomics. PBD/XPBD is iterative
-and forgiving; tiny race conditions wash out across iterations and are a
-standard simplification in research-grade Taichi cloth code.
+The kernel accumulates Δpᵢ and Δpⱼ into a separate per-vertex buffer
+(`self.dp`) with atomic adds, and a follow-up `apply_dp` kernel flushes
+`p ← p + dp` in a race-free one-thread-per-vertex pass. Each
+contribution is additionally scaled by `1 / vertex_valence` so that the
+sum of all parallel updates matches the magnitude a single Gauss-Seidel
+step would apply. This is required for GPU correctness: naive in-place
+`p[i] += …` from a parallel edge loop causes every stiff fabric to
+diverge to NaN in one sub-step. See [`gpu_performance.md`](gpu_performance.md).
 
 ## 4. Bending constraints
 
@@ -139,14 +144,37 @@ for each cloth particle pᵢ:
     n̂    = body_normal[j*]
     s    = (pᵢ − b[j*]) · n̂                 # signed distance to surface
     if s < radius:
-        pᵢ ← pᵢ + (radius − s) · n̂
+        pᵢ ← pᵢ + (radius − s) · n̂         # non-penetration pushout
+        s  ← radius
+    # Position-based friction: inside the capture shell, drag cloth
+    # tangentially with the body so garments don't slide off.
+    if s < capture:
+        w      = 1 − s / capture              # 1 at contact, 0 at shell edge
+        b_vel  = b[j*]_now − b[j*]_prev        # body velocity × Δt
+        tang   = b_vel − (b_vel · n̂) n̂        # tangent component
+        pᵢ    ← pᵢ + friction · w · tang
 ```
 
 This is O(N · NBV) every iteration. Fine for ≈10k cloth verts × 6890
 SMPL verts at demo scale; a real system would use a hash grid or BVH.
 
 Body vertex normals are recomputed any time the body pose changes via
-`set_body(body_V)` calling `geometry.per_vertex_normals`.
+`set_body(body_V)`, which also snapshots the previous body positions
+into `body_x_prev` so the friction term can read `b_vel` for the frame
+currently being solved.
+
+**Why friction?** The non-penetration term alone only stops cloth from
+going *into* the body — nothing connects it tangentially. When the
+body translates or rotates, inertial cloth stays put and the body
+slides out from under the garment, so the dress hem gradually falls
+off the legs. Position-based friction couples cloth to the body's
+tangential motion inside a thin "capture shell"; the strength falls
+linearly from `friction · b_vel_tang` at zero gap to zero at the shell
+edge. This is the PBD variant of the standard contact Coulomb-friction
+model but formulated on positions rather than impulses, so it fits
+cleanly into the XPBD constraint-projection sweep. See
+`--friction` / `--friction_capture` / `--collision_radius` in the
+top-level README for tuning.
 
 ## 6. Finalize
 

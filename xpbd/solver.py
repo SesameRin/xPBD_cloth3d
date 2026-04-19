@@ -56,6 +56,8 @@ class XPBDCloth:
         damping_override=None,
         gravity=(0.0, 0.0, -9.81),
         collision_radius=0.01,
+        friction=0.6,
+        friction_capture=0.03,
     ):
         self.N = V0.shape[0]
         self.NF = F.shape[0]
@@ -129,6 +131,10 @@ class XPBDCloth:
             f"[solver] N={self.N} NF={self.NF} NE={self.NE} NB={self.NB} "
             f"body_V={self.NBV} body_F={self.NBF} garments={len(self.fabrics)}"
         )
+        print(
+            f"         collision radius={collision_radius:.3f}m  "
+            f"friction={friction:.2f}  capture={friction_capture:.3f}m"
+        )
         for i, f in enumerate(self.fabrics):
             print(
                 f"         garment[{i}] fabric={f} "
@@ -140,6 +146,8 @@ class XPBDCloth:
         self.iterations = iterations
         self.gravity = ti.Vector(list(gravity))
         self.collision_radius = collision_radius
+        self.friction = float(friction)
+        self.friction_capture = float(friction_capture)
 
         # particles
         self.x = ti.Vector.field(3, ti.f32, self.N)
@@ -170,6 +178,8 @@ class XPBDCloth:
         # body collider
         self.body_x = ti.Vector.field(3, ti.f32, self.NBV)
         self.body_n = ti.Vector.field(3, ti.f32, self.NBV)
+        # Previous body positions, for friction = drag cloth with body motion.
+        self.body_x_prev = ti.Vector.field(3, ti.f32, self.NBV)
 
         # rendering
         self.face_idx = ti.field(ti.i32, self.NF * 3)
@@ -180,6 +190,8 @@ class XPBDCloth:
             V0, F, E, BP, body_V0, body_F,
             w, vert_damping, dist_compliance_arr, bend_compliance_arr,
         )
+        # Seed body_x_prev = body_V0 so the first frame's "body velocity" is 0.
+        self.body_x_prev.from_numpy(body_V0.astype(np.float32))
         self.set_body(body_V0)
         self.reset_timing()
 
@@ -214,6 +226,9 @@ class XPBDCloth:
         self.face_idx.from_numpy(F.astype(np.int32).flatten())
 
     def set_body(self, body_V):
+        # Snapshot the current positions into _prev BEFORE overwriting body_x
+        # so solve_collision can compute body velocity as body_x - body_x_prev.
+        self.body_x_prev.copy_from(self.body_x)
         self.body_x.from_numpy(body_V.astype(np.float32))
         body_F = self.body_face_idx.to_numpy().reshape(-1, 3)
         vn = per_vertex_normals(body_V.astype(np.float32), body_F)
@@ -297,9 +312,12 @@ class XPBDCloth:
                 self.dp[j] -= wj * dpv * self.inv_bend_val_fld[j]
 
     @ti.kernel
-    def solve_collision(self, radius: ti.f32):
-        # Per cloth vertex: find nearest body vertex and push outside its
-        # sphere along the body normal. O(N · NBV) — fine for demo sizes.
+    def solve_collision(
+        self, radius: ti.f32, friction: ti.f32, capture: ti.f32,
+    ):
+        # Per cloth vertex: find nearest body vertex, push outside its sphere
+        # along the body normal, then (if in the capture shell) drag it with
+        # the body's tangential motion. O(N · NBV) — fine for demo sizes.
         for i in self.p:
             pi = self.p[i]
             best = ti.i32(-1)
@@ -312,10 +330,23 @@ class XPBDCloth:
             if best >= 0:
                 bx = self.body_x[best]
                 bn = self.body_n[best]
+                # Non-penetration pushout.
                 diff = pi - bx
                 signed = diff.dot(bn)
                 if signed < radius:
-                    self.p[i] = pi + (radius - signed) * bn
+                    pi = pi + (radius - signed) * bn
+                    signed = radius
+                # Position-based friction. In contact or inside the capture
+                # shell, drag cloth tangentially with the body. `capture`
+                # is the shell thickness (outside this, gap_w = 0); friction
+                # is the max fraction of body motion transferred at contact.
+                if capture > 0.0 and signed < capture:
+                    gap = signed if signed > 0.0 else 0.0
+                    gap_w = 1.0 - gap / capture
+                    bv = self.body_x[best] - self.body_x_prev[best]
+                    bv_tang = bv - bv.dot(bn) * bn
+                    pi = pi + friction * gap_w * bv_tang
+                self.p[i] = pi
 
     @ti.kernel
     def finalize(self, dt: ti.f32):
@@ -344,7 +375,11 @@ class XPBDCloth:
                 if self.NB > 0:
                     self.solve_bending(sub_dt)
                     self.apply_dp()
-                self.solve_collision(self.collision_radius)
+                self.solve_collision(
+                    self.collision_radius,
+                    self.friction,
+                    self.friction_capture,
+                )
             ti.sync()
             t2 = _p()
             self.finalize(sub_dt)

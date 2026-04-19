@@ -44,7 +44,16 @@ def build_parser():
                    help="override per-garment bending compliance")
     p.add_argument("--damping", type=float, default=None,
                    help="override per-garment damping")
-    p.add_argument("--collision_radius", type=float, default=0.01)
+    p.add_argument("--collision_radius", type=float, default=0.01,
+                   help="body pushout distance in meters. Larger → cloth sits "
+                        "further from skin, less prone to slipping off.")
+    p.add_argument("--friction", type=float, default=0.6,
+                   help="fraction of tangential body motion inherited by "
+                        "cloth in contact (0 = frictionless / slides off, "
+                        "1 = fully stuck). Default 0.6 keeps garments on.")
+    p.add_argument("--friction_capture", type=float, default=0.03,
+                   help="shell thickness in meters inside which friction "
+                        "engages. 0 disables friction entirely.")
     p.add_argument("--viewer", default="auto",
                    choices=["auto", "ggui", "mpl", "none"],
                    help="auto tries ggui then falls back to matplotlib")
@@ -90,6 +99,8 @@ def main(argv=None):
         bend_compliance_override=args.bend_compliance,
         damping_override=args.damping,
         collision_radius=args.collision_radius,
+        friction=args.friction,
+        friction_capture=args.friction_capture,
     )
     cloth.set_color(data["C"])
 

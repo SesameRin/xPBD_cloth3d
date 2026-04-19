@@ -58,7 +58,9 @@ include every simulated garment, e.g. `07414_Trousers+Tshirt.mp4`.
 | `--dist_compliance` | per-fabric | override stretch compliance |
 | `--bend_compliance` | per-fabric | override bending compliance |
 | `--damping` | per-fabric | override per-substep damping |
-| `--collision_radius` | `0.01` | body pushout distance, m |
+| `--collision_radius` | `0.01` | body pushout distance, m (also the contact thickness) |
+| `--friction` | `0.6` | fraction of body's tangential motion inherited by cloth in contact (0 = frictionless, slides off; 1 = fully stuck) |
+| `--friction_capture` | `0.03` | friction engages within this shell thickness (m) around the body; set to 0 to disable friction |
 
 If you do not pass `--dist_compliance` / `--bend_compliance` /
 `--damping`, each garment uses the preset for its CLOTH3D fabric.
@@ -109,3 +111,30 @@ For more, read [`docs/architecture.md`](docs/architecture.md).
   [`docs/gpu_performance.md`](docs/gpu_performance.md) for the CPU vs
   GPU numbers on this workload and the Jacobi-with-valence-scaling
   fix that was needed to make the GPU path stable for stiff fabrics.
+- For fastest iteration, **use `--viewer ggui` when you don't need a
+  saved video**. GGUI renders on the GPU directly from the Taichi
+  fields; matplotlib round-trips every vertex to NumPy and redraws
+  polygons on the CPU, which ends up dominating wall-clock time
+  (~90% on a 6k-vertex mesh).
+
+### Keeping garments on the body
+
+If the dress / trousers slide off the legs when the body animates, that
+is the collision model being pure non-penetration — with no friction,
+nothing couples cloth tangentially to the skin and gravity slowly
+slips the hem down. The knobs, strongest first:
+
+- **`--friction 0.6 → 0.9`**: more body-tangent motion transferred to
+  cloth in contact. `0.9` makes cloth follow the body like it's Velcroed;
+  `0.3` is "ice-skater silk."
+- **`--friction_capture 0.03 → 0.06`**: wider shell where friction
+  engages. Useful if the dress is separated from the skin by a few cm.
+- **`--collision_radius 0.01 → 0.02`**: thicker non-penetration layer,
+  so cloth sits further out and has more slack before it can clear
+  the hip/shoulder.
+- **`--damping 0.05`** on top: overrides per-fabric damping; heavier
+  damping removes "swing" momentum that would otherwise slide cloth
+  off in the first few frames.
+
+For a sticky-dress baseline try: `--friction 0.8 --friction_capture
+0.04 --collision_radius 0.015`.
