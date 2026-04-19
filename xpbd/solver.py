@@ -312,12 +312,14 @@ class XPBDCloth:
                 self.dp[j] -= wj * dpv * self.inv_bend_val_fld[j]
 
     @ti.kernel
-    def solve_collision(
-        self, radius: ti.f32, friction: ti.f32, capture: ti.f32,
-    ):
-        # Per cloth vertex: find nearest body vertex, push outside its sphere
-        # along the body normal, then (if in the capture shell) drag it with
-        # the body's tangential motion. O(N · NBV) — fine for demo sizes.
+    def solve_collision(self, radius: ti.f32):
+        # Non-penetration only. Called inside the iteration loop.
+        # Per cloth vertex: find nearest body vertex and push outside its
+        # sphere along the body's outward normal. Pushout is clamped to
+        # 2*radius per call so a deep penetrator crawls out over several
+        # iterations instead of teleporting — teleporting amplifies through
+        # the stiff distance constraints and explodes neighboring vertices.
+        max_push = 2.0 * radius
         for i in self.p:
             pi = self.p[i]
             best = ti.i32(-1)
@@ -330,23 +332,47 @@ class XPBDCloth:
             if best >= 0:
                 bx = self.body_x[best]
                 bn = self.body_n[best]
-                # Non-penetration pushout.
                 diff = pi - bx
                 signed = diff.dot(bn)
                 if signed < radius:
-                    pi = pi + (radius - signed) * bn
-                    signed = radius
-                # Position-based friction. In contact or inside the capture
-                # shell, drag cloth tangentially with the body. `capture`
-                # is the shell thickness (outside this, gap_w = 0); friction
-                # is the max fraction of body motion transferred at contact.
-                if capture > 0.0 and signed < capture:
-                    gap = signed if signed > 0.0 else 0.0
-                    gap_w = 1.0 - gap / capture
+                    push = radius - signed
+                    if push > max_push:
+                        push = max_push
+                    self.p[i] = pi + push * bn
+
+    @ti.kernel
+    def apply_contact_friction(
+        self, bv_scale: ti.f32, friction: ti.f32, capture: ti.f32,
+    ):
+        # Position-based friction, called ONCE per substep (not per iteration)
+        # so the per-frame sum equals friction * bv_tang instead of
+        # (iterations * friction * bv_tang). `bv_scale = 1/substeps` so
+        # substeps × this kernel sum to one frame of body motion.
+        #
+        # Only applied for cloth vertices that are OUTSIDE the body
+        # (signed >= 0). Penetrators get a random-facing nearest-body-vertex
+        # normal and a nonsense body-velocity direction; applying friction
+        # there drives them tangentially into garbage. They recover via
+        # pushout in solve_collision, then friction re-engages automatically
+        # on a later substep once signed >= 0.
+        for i in self.p:
+            pi = self.p[i]
+            best = ti.i32(-1)
+            best_d2 = ti.f32(1e18)
+            for j in range(self.NBV):
+                d2 = (pi - self.body_x[j]).norm_sqr()
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = j
+            if best >= 0:
+                bx = self.body_x[best]
+                bn = self.body_n[best]
+                signed = (pi - bx).dot(bn)
+                if signed >= 0.0 and signed < capture:
+                    gap_w = 1.0 - signed / capture
                     bv = self.body_x[best] - self.body_x_prev[best]
                     bv_tang = bv - bv.dot(bn) * bn
-                    pi = pi + friction * gap_w * bv_tang
-                self.p[i] = pi
+                    self.p[i] = pi + friction * gap_w * bv_scale * bv_tang
 
     @ti.kernel
     def finalize(self, dt: ti.f32):
@@ -375,10 +401,15 @@ class XPBDCloth:
                 if self.NB > 0:
                     self.solve_bending(sub_dt)
                     self.apply_dp()
-                self.solve_collision(
-                    self.collision_radius,
-                    self.friction,
-                    self.friction_capture,
+                self.solve_collision(self.collision_radius)
+            # Friction: once per substep, sized to contribute 1/substeps of
+            # the frame's body motion so the per-frame sum equals
+            # friction*bv_tang, not substeps*iterations*friction*bv_tang.
+            # Python-side guard — no need to launch the O(N·NBV) kernel at all
+            # when friction is disabled.
+            if self.friction > 0.0 and self.friction_capture > 0.0:
+                self.apply_contact_friction(
+                    1.0 / self.substeps, self.friction, self.friction_capture,
                 )
             ti.sync()
             t2 = _p()

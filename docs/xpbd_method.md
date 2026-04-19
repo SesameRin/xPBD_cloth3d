@@ -24,13 +24,14 @@ constraint.
 `sub_dt = dt / substeps`. Each substep is:
 
 ```
-predict(sub_dt)             # advance velocities + tentative positions
-reset_lambdas()             # λ ← 0 for every constraint
+predict(sub_dt)                           # advance v + tentative p
+reset_lambdas()                           # λ ← 0 for every constraint
 for _ in range(iterations):
-    solve_distance(sub_dt)
-    solve_bending(sub_dt)
-    solve_collision(radius)
-finalize(sub_dt)            # write back positions, derive velocities
+    solve_distance(sub_dt)                # in-plane stretch
+    solve_bending(sub_dt)                 # dihedral bending shortcut
+    solve_collision(radius)               # non-penetration pushout only
+apply_contact_friction(1/substeps, μ, h)  # once per substep, not per iter
+finalize(sub_dt)                          # derive v, write back positions
 ```
 
 Smaller `sub_dt` (more `substeps`) → better accuracy and stability,
@@ -138,43 +139,82 @@ Per cloth particle, find the **nearest body vertex** and push outside a
 sphere of `collision_radius` centred on that body vertex, along the
 body's outward normal. Concretely:
 
+### 5a. Non-penetration — `solve_collision`
+
+Called *inside the iteration loop* (5 iters × 10 substeps = 50× per frame).
+
 ```
 for each cloth particle pᵢ:
     j*   = argmin_j ‖pᵢ − bⱼ‖²
     n̂    = body_normal[j*]
     s    = (pᵢ − b[j*]) · n̂                 # signed distance to surface
     if s < radius:
-        pᵢ ← pᵢ + (radius − s) · n̂         # non-penetration pushout
-        s  ← radius
-    # Position-based friction: inside the capture shell, drag cloth
-    # tangentially with the body so garments don't slide off.
-    if s < capture:
-        w      = 1 − s / capture              # 1 at contact, 0 at shell edge
-        b_vel  = b[j*]_now − b[j*]_prev        # body velocity × Δt
-        tang   = b_vel − (b_vel · n̂) n̂        # tangent component
-        pᵢ    ← pᵢ + friction · w · tang
+        push = min(radius − s, 2·radius)    # clamp pushout per call
+        pᵢ  ← pᵢ + push · n̂
 ```
 
-This is O(N · NBV) every iteration. Fine for ≈10k cloth verts × 6890
-SMPL verts at demo scale; a real system would use a hash grid or BVH.
+Pushout is clamped to `2·radius` per call so a deeply penetrating
+vertex (CLOTH3D data isn't intersection-free at frame 0) crawls out
+over several iterations instead of teleporting by 5–10 cm in one
+shot. Teleporting propagates through the stiff distance constraints
+and blows up neighbors.
+
+### 5b. Friction — `apply_contact_friction`
+
+Called *once per substep* (10× per frame), **not** per iteration.
+
+```
+if capture > 0 and μ > 0:
+  for each cloth particle pᵢ:
+      j*   = argmin_j ‖pᵢ − bⱼ‖²
+      n̂    = body_normal[j*]
+      s    = (pᵢ − b[j*]) · n̂
+      if 0 ≤ s < capture:                   # contact AND non-penetrating
+          w      = 1 − s / capture           # 1 at skin, 0 at shell edge
+          b_vel  = b[j*]_now − b[j*]_prev     # body motion this frame
+          tang   = b_vel − (b_vel · n̂) n̂
+          pᵢ    ← pᵢ + μ · w · (1/substeps) · tang
+```
+
+Two things are doing work here.
+
+**(1) Once per substep with `1/substeps` scaling.** If friction were
+applied inside the iteration loop, it would add `μ · b_vel_tang` fifty
+times per frame — the same frame-level body motion re-used at every
+call — and stable cloth would drift by `50 · μ · b_vel_tang` per
+frame. Running once per substep with `bv_scale = 1/substeps` makes
+the per-frame sum equal exactly `μ · b_vel_tang`, which is the
+physically intended amount.
+
+**(2) Penetrator gate `s ≥ 0`.** For cloth wedged inside the body,
+`argmin` can snap to a body vertex on the *far* side of a limb — its
+normal faces the wrong way and its body-velocity direction is
+unrelated to the correct tangent. Applying friction there drives the
+vertex tangentially into nonsense. Instead we skip friction while
+`s < 0` and rely on the pushout in `solve_collision` to recover the
+vertex; once `s ≥ 0` on a later substep friction re-engages.
+
+This is O(N · NBV) every call — one cloth vertex vs. every body
+vertex. Fine for ≈10k cloth verts × 6890 SMPL verts at demo scale; a
+real system would use a hash grid or BVH.
 
 Body vertex normals are recomputed any time the body pose changes via
 `set_body(body_V)`, which also snapshots the previous body positions
-into `body_x_prev` so the friction term can read `b_vel` for the frame
+into `body_x_prev` so friction can read `b_vel` for the frame
 currently being solved.
 
-**Why friction?** The non-penetration term alone only stops cloth from
-going *into* the body — nothing connects it tangentially. When the
-body translates or rotates, inertial cloth stays put and the body
-slides out from under the garment, so the dress hem gradually falls
-off the legs. Position-based friction couples cloth to the body's
-tangential motion inside a thin "capture shell"; the strength falls
-linearly from `friction · b_vel_tang` at zero gap to zero at the shell
-edge. This is the PBD variant of the standard contact Coulomb-friction
-model but formulated on positions rather than impulses, so it fits
-cleanly into the XPBD constraint-projection sweep. See
-`--friction` / `--friction_capture` / `--collision_radius` in the
-top-level README for tuning.
+**Why friction at all?** Non-penetration only stops cloth from going
+*into* the body; nothing connects it tangentially. When the body
+translates or rotates, inertial cloth stays put and the body slides
+out from under the garment, so the hem gradually falls off the legs.
+Position-based friction couples cloth to the body's tangential motion
+inside a thin "capture shell"; strength falls linearly from
+`μ · b_vel_tang` at zero gap to zero at the shell edge. This is the
+PBD variant of the standard contact Coulomb-friction model but
+formulated on positions rather than impulses, so it fits cleanly into
+the XPBD constraint-projection sweep. See `--friction` /
+`--friction_capture` / `--collision_radius` in the top-level README
+for tuning.
 
 ## 6. Finalize
 
