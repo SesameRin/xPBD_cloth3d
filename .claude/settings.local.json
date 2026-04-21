@@ -6,7 +6,8 @@
       "Bash(pip3 list *)",
       "Bash(pip3 install *)",
       "Bash(python3 *)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)"
     ]
   }
 }

@@ -36,6 +36,15 @@ python3 xpbd_cloth.py --sample 07414 --garments all --force_fabric cotton \
 # Headless: dump cloth vertices as .npy every N steps
 python3 xpbd_cloth.py --sample 07414 --garments all \
     --viewer none --steps 300 --save_every 10
+
+# Export eval-compatible NPZ files (teammate's cloth3d_benchmark schema).
+# Omit --body_frames / --steps to simulate the whole sample automatically.
+python3 xpbd_cloth.py --sample 00016 --garments all \
+    --arch gpu --save_npz --save_sample_npz
+
+# Batch: simulate every sample under cloth3d/Samples/ into one timestamped folder.
+# --save_sample_npz defaults on here (pass --no_save_sample_npz to skip).
+python3 -m xpbd.batch --arch gpu
 ```
 
 `python3 -m xpbd …` also works. Output goes to `xpbd_out/`; filenames
@@ -49,7 +58,8 @@ include every simulated garment, e.g. `07414_Trousers+Tshirt.mp4`.
 | `--garments` | `all` | comma list (`Tshirt,Trousers`) or `all` |
 | `--garment` | `None` | deprecated single-garment alias |
 | `--force_fabric` | off | override fabric for *all* garments (`cotton`, `silk`, `denim`, `leather`) |
-| `--body_frames` | `1` | >1 animates the body collider over the first N frames |
+| `--body_frames` | auto (full sample) | number of body frames to animate; omit or pass `-1` to use every frame `get_num_frames(sample)` returns |
+| `--steps` | auto (= `--body_frames`) | simulation steps to run; omit or pass `-1` to match `--body_frames` |
 | `--viewer` | `auto` | `auto` / `ggui` / `mpl` / `none` |
 | `--save_video` | off | with `--viewer mpl`, render mp4 (or gif fallback) |
 | `--arch` | `cpu` | Taichi backend (`cpu`, `gpu`, `vulkan`). Non-cpu backends auto-enable GPU-safe graph-colored constraint solves — see [`docs/xpbd_method.md`](docs/xpbd_method.md) §3. |
@@ -60,6 +70,10 @@ include every simulated garment, e.g. `07414_Trousers+Tshirt.mp4`.
 | `--bend_compliance` | per-fabric | override bending compliance |
 | `--damping` | per-fabric | override per-substep damping |
 | `--collision_radius` | `0.01` | body pushout distance, m |
+| `--save_npz` | off | write per-garment `_sim.npz` files for the benchmark eval — see [`docs/eval_export.md`](docs/eval_export.md) |
+| `--npz_out` | `xpbd_out/results_xpbd` | output dir for `--save_npz` |
+| `--save_sample_npz` | off | also extract per-sample CLOTH3D `{sample}.npz` the eval reopens |
+| `--sample_npz_dir` | `xpbd_out/cloth3d_data` | output dir for `--save_sample_npz` |
 
 If you do not pass `--dist_compliance` / `--bend_compliance` /
 `--damping`, each garment uses the preset for its CLOTH3D fabric.
@@ -87,11 +101,12 @@ and one CPU XPBD step.
 ```
 xpbd_cloth.py        thin shim → xpbd.cli.main
 xpbd/                the simulator package (fabrics / geometry / data /
-                     solver / viewers / cli)
+                     solver / viewers / cli / export)
 cloth3d/             vendored CLOTH3D toolkit (DataReader, Demo, Samples)
 tests/               smoke tests
 docs/                explanation files (start here for the deep dive)
-xpbd_out/            rendered mp4s and headless .npy frame dumps
+xpbd_out/            rendered mp4s, headless .npy dumps, and
+                     results_xpbd/ + cloth3d_data/ for benchmark eval
 ```
 
 For more, read [`docs/architecture.md`](docs/architecture.md).

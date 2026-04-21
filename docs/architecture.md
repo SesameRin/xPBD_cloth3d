@@ -15,7 +15,8 @@ xPBD/
 │   ├── geometry.py      build_edges, build_bending_pairs, normals, mass
 │   ├── data.py          load_sample(): CLOTH3D loader + multi-garment merge
 │   ├── solver.py        XPBDCloth class + Taichi kernels
-│   └── viewers.py       run_gui / run_matplotlib / run_headless
+│   ├── viewers.py       run_gui / run_matplotlib / run_headless / run_export
+│   └── export.py        eval-compatible NPZ writer (see docs/eval_export.md)
 ├── cloth3d/             ← vendored CLOTH3D toolkit (DataReader, Demo, …)
 │   ├── DataReader/      readOBJ, readPC2, SMPL, etc.
 │   └── Demo/extract_sample_data.py   used by xpbd.data
@@ -81,11 +82,24 @@ kernels, bit-identical to the pre-GPU implementation. The coloring +
 kernel pair both live in `xpbd.solver`.
 
 ### `xpbd.viewers`
-Three rendering back-ends sharing one signature `(cloth, data, args)`:
+Four back-ends sharing one signature `(cloth, data, args)`:
 
 - `run_gui` — Taichi GGUI (Vulkan).
 - `run_matplotlib` — `Poly3DCollection` animation; can save mp4/gif.
 - `run_headless` — no display; saves cloth vertex frames as `.npy`.
+- `run_export` — headless sim that writes eval-compatible NPZ files
+  (per-garment `{sample}_{garment}_sim.npz`) consumable by the
+  teammate's `cloth3d_benchmark/cloth3d_eval` module. Routed when
+  `--save_npz` is set. See `docs/eval_export.md`.
+
+### `xpbd.export`
+Pure-NumPy NPZ writer, no Taichi or solver dependency. Provides
+`write_result_npz(...)`, `slice_garment(F, vert_gid, gid)`,
+`rotate_x_minus_90(V)` (CLOTH3D z-up → libuipc y-up), and
+`write_sample_npz(dir, sample)` for the per-sample CLOTH3D extraction
+the eval's source loader reopens. See `docs/eval_export.md` for the
+schema it produces and a step-by-step recipe for running the teammate's
+eval against our outputs.
 
 ### `xpbd.cli`
 `build_parser()` defines all CLI flags. `main()`:

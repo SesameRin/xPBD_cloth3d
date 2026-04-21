@@ -5,10 +5,10 @@ import os
 
 import taichi as ti
 
-from .data import load_sample
+from .data import get_num_frames, load_sample
 from .fabrics import FABRIC_PRESETS
 from .solver import XPBDCloth
-from .viewers import run_gui, run_headless, run_matplotlib
+from .viewers import run_export, run_gui, run_headless, run_matplotlib
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, os.pardir))
@@ -33,8 +33,9 @@ def build_parser():
              "matching a C-IPC baseline that uses a single material.",
     )
     p.add_argument("--arch", default="cpu", choices=["cpu", "gpu", "vulkan"])
-    p.add_argument("--body_frames", type=int, default=1,
-                   help="number of body frames to animate; 1 = static")
+    p.add_argument("--body_frames", type=int, default=None,
+                   help="number of body frames to animate; "
+                        "omit or pass -1 to use every frame in the sample")
     p.add_argument("--dt", type=float, default=1.0 / 60.0)
     p.add_argument("--substeps", type=int, default=10)
     p.add_argument("--iters", type=int, default=5)
@@ -52,9 +53,35 @@ def build_parser():
                    help="alias for --viewer none")
     p.add_argument("--save_video", action="store_true",
                    help="with --viewer mpl, save an mp4 instead of showing a window")
-    p.add_argument("--steps", type=int, default=300)
+    p.add_argument("--steps", type=int, default=None,
+                   help="number of simulation steps to run; "
+                        "omit or pass -1 to match the sample's frame count")
     p.add_argument("--save_every", type=int, default=5)
     p.add_argument("--out", default=os.path.join(_REPO, "xpbd_out"))
+
+    # Eval-compatible NPZ export. Produces per-garment
+    # {sample}_{garment}_sim.npz files that the teammate's cloth3d_eval
+    # module can consume without changes.
+    p.add_argument(
+        "--save_npz", action="store_true",
+        help="run in export mode: write per-garment sim NPZ files that "
+             "match the cloth3d_benchmark eval schema.",
+    )
+    p.add_argument(
+        "--npz_out",
+        default=os.path.join(_REPO, "xpbd_out", "results_xpbd"),
+        help="directory where {sample}_{garment}_sim.npz files are written.",
+    )
+    p.add_argument(
+        "--save_sample_npz", action="store_true",
+        help="also extract the per-sample CLOTH3D NPZ that the eval's "
+             "source loader reopens (convert_from_cloth3d).",
+    )
+    p.add_argument(
+        "--sample_npz_dir",
+        default=os.path.join(_REPO, "xpbd_out", "cloth3d_data"),
+        help="directory for --save_sample_npz output.",
+    )
     return p
 
 
@@ -66,10 +93,25 @@ def main(argv=None):
     # back-compat: --garment takes precedence if explicitly passed
     garments_spec = args.garment if args.garment else args.garments
 
+    # Auto-default body_frames and steps to the sample's full length
+    # when the user doesn't specify (or passes -1). CLOTH3D stores one
+    # pose per frame, so "full sample" == get_num_frames(sample).
+    if args.body_frames is None or args.body_frames <= 0:
+        args.body_frames = get_num_frames(args.sample)
+        print(f"[cli] --body_frames auto = {args.body_frames} (full sample)")
+    if args.steps is None or args.steps <= 0:
+        args.steps = args.body_frames
+        print(f"[cli] --steps auto = {args.steps} (matches body_frames)")
+
     arch_map = {"cpu": ti.cpu, "gpu": ti.gpu, "vulkan": ti.vulkan}
     ti.init(arch=arch_map[args.arch], default_fp=ti.f32)
 
-    data = load_sample(args.sample, garments_spec, n_body_frames=args.body_frames)
+    data = load_sample(
+        args.sample,
+        garments_spec,
+        n_body_frames=args.body_frames,
+        need_gt_trajectory=args.save_npz,
+    )
 
     fabrics = data["garment_fabrics"]
     if args.force_fabric:
@@ -94,7 +136,9 @@ def main(argv=None):
     )
     cloth.set_color(data["C"])
 
-    if args.viewer == "none":
+    if args.save_npz:
+        run_export(cloth, data, args)
+    elif args.viewer == "none":
         run_headless(cloth, data, args)
     elif args.viewer == "mpl":
         run_matplotlib(cloth, data, args)

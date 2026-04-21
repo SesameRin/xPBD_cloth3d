@@ -33,16 +33,23 @@ viewer dispatch  ──►│ xpbd/cli.py            (auto / ggui / mpl / │
                     │                         none)               │
                     └───────────────┬────────────────────────────┘
                                     │
-              ┌─────────────────────┼─────────────────────────────┐
-              ▼                     ▼                             ▼
-      run_gui (GGUI)         run_matplotlib                 run_headless
-      xpbd/viewers.py        xpbd/viewers.py                xpbd/viewers.py
-              │                     │                             │
-              └────────►  cloth.step() per displayed frame  ◄─────┘
+       ┌──────────────┬───────────────┬───────────────┬─────────────┐
+       ▼              ▼               ▼               ▼             ▼
+  run_gui       run_matplotlib   run_headless    run_export
+  (GGUI)        xpbd/viewers.py  xpbd/viewers.py xpbd/viewers.py
+  xpbd/viewers.py                                   │
+       │              │               │              └──► xpbd/export.py
+       │              │               │                   write_result_npz
+       └──────────────┴───────────────┴── cloth.step() per frame
                                     │
                                     ▼
                        XPBDCloth.step(): see xpbd_method.md
 ```
+
+`run_export` is selected when `--save_npz` is set — it drives a headless
+sim that writes per-garment `{sample}_{garment}_sim.npz` files matching
+the teammate's `cloth3d_benchmark/cloth3d_eval` schema. See
+`docs/eval_export.md`.
 
 ## What flows between stages
 

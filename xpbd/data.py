@@ -36,7 +36,12 @@ def _parse_garment_list(spec, available):
     return names
 
 
-def load_sample(sample, garments_spec=None, n_body_frames=1):
+def load_sample(
+    sample,
+    garments_spec=None,
+    n_body_frames=1,
+    need_gt_trajectory=False,
+):
     """Load one CLOTH3D sample and merge requested garments into one cloth.
 
     Parameters
@@ -49,6 +54,10 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
         "Tshirt,Trousers" -> the named subset.
     n_body_frames : int
         How many SMPL body frames to load (1 = static collider).
+    need_gt_trajectory : bool
+        When True, also load per-garment ground-truth CLOTH3D vertex
+        positions for every frame in 0..n_body_frames-1 and per-garment
+        rest shapes. Required for the eval-compatible NPZ export.
 
     Returns
     -------
@@ -62,6 +71,10 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
         body_V_seq (T, 6890, 3)  SMPL body vertices (float32)
         body_F    (NBF, 3) SMPL face list
         sample    str
+        cloth_frame_dt   float, CLOTH3D source framerate (1/30 s)
+        # only when need_gt_trajectory=True:
+        garment_V_rest   dict[name -> (N_g, 3) float32] rest shape per garment
+        gt_V_by_garment  dict[name -> (T, N_g, 3) float32] CLOTH3D GT per frame
     """
     data0 = extract_sample_single_frame(
         sample, 0, use_uv_map=False, show_display=False
@@ -70,6 +83,7 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
     names = _parse_garment_list(garments_spec, available)
 
     V_list, F_list, C_list, gid_list, fabrics = [], [], [], [], []
+    V_rest_by_garment = {}
     v_offset = 0
     for gi, name in enumerate(names):
         key = f"garment_{name}"
@@ -83,6 +97,10 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
         C_list.append(C)
         gid_list.append(np.full(V.shape[0], gi, dtype=np.int32))
         fabrics.append(fab)
+        if need_gt_trajectory and f"{key}_V_rest" in data0:
+            V_rest_by_garment[name] = np.asarray(
+                data0[f"{key}_V_rest"], dtype=np.float32
+            )
         v_offset += V.shape[0]
 
     V0 = np.concatenate(V_list, axis=0).astype(np.float32)
@@ -100,13 +118,7 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
         if body_F is None:
             body_F = np.asarray(Fb, dtype=np.int32)
 
-    print(
-        f"[data] sample={sample} garments={names} fabrics={fabrics} "
-        f"cloth_V={V0.shape[0]} cloth_F={F.shape[0]} "
-        f"body_V={body_V_seq.shape[1]} body_F={body_F.shape[0]} "
-        f"frames={n_body_frames}"
-    )
-    return dict(
+    out = dict(
         V0=V0,
         F=F,
         C=C,
@@ -116,4 +128,29 @@ def load_sample(sample, garments_spec=None, n_body_frames=1):
         body_V_seq=body_V_seq,
         body_F=body_F,
         sample=sample,
+        cloth_frame_dt=1.0 / 30.0,
     )
+
+    if need_gt_trajectory:
+        gt_V_by_garment = {}
+        for gi, name in enumerate(names):
+            n_g = int((vert_gid == gi).sum())
+            gt_seq = np.empty((n_body_frames, n_g, 3), dtype=np.float32)
+            for fi in range(n_body_frames):
+                Vg = reader.read_garment_vertices(sample, name, fi)
+                gt_seq[fi] = np.asarray(Vg, dtype=np.float32)
+            gt_V_by_garment[name] = gt_seq
+        out["garment_V_rest"] = V_rest_by_garment
+        out["gt_V_by_garment"] = gt_V_by_garment
+        print(
+            f"[data] loaded GT trajectory: "
+            f"{ {n: v.shape for n, v in gt_V_by_garment.items()} }"
+        )
+
+    print(
+        f"[data] sample={sample} garments={names} fabrics={fabrics} "
+        f"cloth_V={V0.shape[0]} cloth_F={F.shape[0]} "
+        f"body_V={body_V_seq.shape[1]} body_F={body_F.shape[0]} "
+        f"frames={n_body_frames}"
+    )
+    return out
