@@ -123,6 +123,54 @@ Batch eval discovers `*_sim.npz` recursively, matches each one to
 `{cloth3d_npz_path}/{sample}.npz`, and writes per-run JSON + a summary
 CSV. Single-run mode via `--result_npz path/to/foo_sim.npz` also works.
 
+## Drop runs: extra eval flags
+
+If you exported with `--garment_y_translation 3.0`, the eval needs two
+extra flags to interpret the result correctly. They mirror partner's
+drop command exactly:
+
+| eval flag | value | role |
+|---|---|---|
+| `--garment_y_translation` | match the export (e.g. `3.0`) | tells the eval's source loader to lift the source-side GT by the same amount the exporter lifted `sim_V_seq` / `gt_V_seq`. The eval also reads this from `run.extra` in the result NPZ as a fallback, so you can omit it if the file was exported by current xPBD; passing it explicitly is the safe match for partner's command. |
+| `--experiment_protocol` | `drop` | switches warning/info semantics: suppresses the "Numerical temporal instability" failure-taxonomy label and tags velocity / acceleration spike outputs as not meaningful for a free fall. Does *not* change metric formulas. |
+| `--cloth_reference_shape` | `rest` | use the un-draped CLOTH3D rest mesh as the stretch/shear reference. Already the default in our exporter. |
+
+End-to-end, drop variant:
+
+```bash
+# 1. Simulate + export under drop protocol (one sample)
+python3 xpbd_cloth.py \
+  --sample 00007 --garments Tshirt \
+  --arch gpu --garment_y_translation 3.0 \
+  --save_npz --save_sample_npz
+
+# 2. Eval the drop run
+cd ../cloth3d-ipc-xpbd/cloth3d_benchmark
+
+# Single run:
+python3 eval_metrics.py \
+  --result_npz /home/ula/CMU/pba-proj/xPBD/xpbd_out/results_xpbd/00007_Tshirt/00007_Tshirt_sim.npz \
+  --cloth3d_npz_path /home/ula/CMU/pba-proj/xPBD/xpbd_out/cloth3d_data \
+  --cloth_reference_shape rest \
+  --garment_y_translation 3.0 \
+  --experiment_protocol drop \
+  --output_dir ./eval_outputs_xpbd_dropping
+
+# Or batch (all drop runs at once):
+python3 eval_metrics.py \
+  --results_root /home/ula/CMU/pba-proj/xPBD/xpbd_out/results_xpbd \
+  --cloth3d_npz_path /home/ula/CMU/pba-proj/xPBD/xpbd_out/cloth3d_data \
+  --cloth_reference_shape rest \
+  --garment_y_translation 3.0 \
+  --experiment_protocol drop \
+  --output_dir ./eval_outputs_xpbd_dropping
+```
+
+See [`drop_experiment.md`](drop_experiment.md) for the full drop recipe
+(simulator side + how it lines up with partner's IPC drop), and
+`compare_eval_outputs.py` for cross-solver plots once both
+`eval_outputs_ipc_dropping` and `eval_outputs_xpbd_dropping` exist.
+
 ## Schema crib sheet
 
 The fields `write_result_npz` emits, and where they come from in the

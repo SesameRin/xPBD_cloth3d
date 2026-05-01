@@ -83,6 +83,16 @@ conda run -n uipc_env python \
   --renderer gpu \
   --cloth both \
   --format mp4
+
+
+conda run -n uipc_env python \
+  /home/ula/CMU/pba-proj/cloth3d-ipc-xpbd/cloth3d_benchmark/visualize_sim.py \
+  --npz /home/ula/CMU/pba-proj/xPBD/xpbd_out/results_xpbd/00001_Jumpsuit/00001_Jumpsuit_sim.npz \
+  --renderer gpu \
+  --cloth both \
+  --format mp4
+  
+xpbd_out/results_xpbd/00001_Jumpsuit/00001_Jumpsuit_sim.npz
 ```
 
 Output lands next to the NPZ as `00016_Trousers_sim_both.mp4`. Override

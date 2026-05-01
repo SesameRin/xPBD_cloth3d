@@ -271,7 +271,16 @@ def run_export(cloth, data, args):
             print(f"  [export] step {i+1}/{n_frames}")
 
     # Human (SMPL) mesh matches the frames we actually simulated.
-    human_V_seq = body_frames[:n_frames].astype(np.float64)
+    # When freeze_body is on the cloth was simulated against frame 0 only,
+    # so save frame 0 tiled for every frame -- otherwise the partner's
+    # visualize_sim.py and the eval's contact metrics would compare cloth
+    # against a body that was never actually present in the simulation.
+    if freeze_body:
+        human_V_seq = np.broadcast_to(
+            body_frames[0], (n_frames,) + body_frames[0].shape
+        ).astype(np.float64).copy()
+    else:
+        human_V_seq = body_frames[:n_frames].astype(np.float64)
     human_faces = np.asarray(data["body_F"], dtype=np.int32)
 
     os.makedirs(args.npz_out, exist_ok=True)

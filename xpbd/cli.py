@@ -130,6 +130,17 @@ def main(argv=None):
         if args.freeze_body:
             print("[cli] --freeze_body auto-on (drop run)")
 
+    # Drop runs also auto-zero per-substep damping. The fabric presets
+    # are tuned for worn cloth where damping suppresses oscillation
+    # around the body; in a free fall the same damping caps terminal
+    # velocity at g*dt_sub/damp (~0.55 m/s for cotton at the defaults),
+    # which makes the cloth "float down" instead of falling. Setting
+    # damping to 0 lets gravity dominate. Pass --damping <value>
+    # explicitly to override.
+    if args.garment_y_translation and args.damping is None:
+        args.damping = 0.0
+        print("[cli] --damping auto = 0.0 (drop run; pass --damping to override)")
+
     # Auto-default body_frames and steps to the sample's full length
     # when the user doesn't specify (or passes -1). CLOTH3D stores one
     # pose per frame, so "full sample" == get_num_frames(sample).

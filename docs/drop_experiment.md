@@ -30,6 +30,14 @@ single CLI flag, `--garment_y_translation`.
   the entire run. This mirrors partner's `--freeze_human_mesh on`: the
   body is a static T-pose that the cloth falls onto, not an animated
   body. Pass `--no_freeze_body` to override.
+- It also auto-sets `--damping 0.0`. The fabric presets in
+  `xpbd/fabrics.py` apply per-substep velocity damping that is right
+  for *worn* cloth (suppresses oscillation around the body) but caps
+  terminal velocity at `g * dt_sub / damp` ≈ 0.55 m/s for cotton at
+  the defaults — so the cloth would *float* down instead of fall.
+  Zeroing damping lets gravity dominate. Pass `--damping <value>`
+  explicitly to override (e.g. `--damping 0.001` if a tiny amount of
+  decay improves stability after contact).
 
 ## Why z-up `+t` matches partner's y-up `+t`
 

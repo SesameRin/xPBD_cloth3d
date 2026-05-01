@@ -52,6 +52,7 @@ offending sample's log.
 | `--substeps` | solver default | passthrough |
 | `--iters` | solver default | passthrough |
 | `--force_fabric` | off | passthrough (cotton/silk/denim/leather) |
+| `--garment_y_translation` | `0.0` | drop-experiment lift in metres along z; passed through to *every* sample. Use `3.0` to mirror partner's drop. See [`drop_experiment.md`](drop_experiment.md). |
 | `--save_sample_npz` | **on** | extract the per-sample CLOTH3D NPZ the eval reopens |
 | `--no_save_sample_npz` | — | opt out of the per-sample NPZ |
 | `--timeout` | no limit | per-sample subprocess timeout in seconds |
@@ -76,10 +77,24 @@ python3 -m xpbd.batch --arch gpu --samples 00016,07414 --timeout 900
 
 # Or the C-IPC cotton comparison run:
 python3 -m xpbd.batch --arch gpu --force_fabric cotton
+
+# Drop-experiment batch (every sample, lifted 3 m above the body):
+python3 -m xpbd.batch --arch gpu --garment_y_translation 3.0
 ```
 
 The batch prints the exact `batch_*` folder it created and the
 `results_root` / `cloth3d_npz_path` paths you feed to the eval.
+
+> **One batch = one regime.** `--garment_y_translation` is propagated
+> uniformly to every sample subprocess. To compare drop vs worn-cloth,
+> run two separate batches into two separate folders (e.g. via
+> `--batch_name worn` and `--batch_name drop`), then run the eval twice.
+> Mixing both regimes in one folder is unsupported — the eval has a
+> single `--garment_y_translation` and `--experiment_protocol` flag per
+> invocation and would mis-interpret half the runs. (The `_sim.npz`
+> files do record their own `garment_y_translation` field, so a future
+> eval-side improvement could autodetect; today the safer path is two
+> batches.)
 
 ### Phase 2: run the teammate's eval (different env)
 
@@ -102,6 +117,27 @@ python3 eval_metrics.py \
 Batch eval discovers every `*_sim.npz` under `results_xpbd/`, matches it
 to `{cloth3d_npz_path}/{sample}.npz`, and writes per-run JSON plus a
 `summary.csv`.
+
+### Drop-batch eval
+
+If phase 1 ran with `--garment_y_translation 3.0`, append the two
+drop-protocol flags to phase 2 (matches partner's command):
+
+```bash
+python3 eval_metrics.py \
+  --results_root   "$BATCH/results_xpbd" \
+  --cloth3d_npz_path "$BATCH/cloth3d_data" \
+  --cloth_reference_shape rest \
+  --garment_y_translation 3.0 \
+  --experiment_protocol drop \
+  --output_dir     "$BATCH/eval_outputs_dropping"
+```
+
+`--experiment_protocol drop` only changes warning semantics; it is safe
+to omit but you'll get spike-based outputs that the eval otherwise
+flags as not meaningful for free-fall runs. See
+[`drop_experiment.md`](drop_experiment.md) and
+[`eval_export.md`](eval_export.md) for the full flag reference.
 
 ## Why subprocess-per-sample
 
