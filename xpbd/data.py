@@ -41,6 +41,7 @@ def load_sample(
     garments_spec=None,
     n_body_frames=1,
     need_gt_trajectory=False,
+    garment_y_translation=0.0,
 ):
     """Load one CLOTH3D sample and merge requested garments into one cloth.
 
@@ -58,6 +59,14 @@ def load_sample(
         When True, also load per-garment ground-truth CLOTH3D vertex
         positions for every frame in 0..n_body_frames-1 and per-garment
         rest shapes. Required for the eval-compatible NPZ export.
+    garment_y_translation : float
+        Drop-experiment offset. Lifts every cloth vertex (`V0` and the
+        per-frame GT used by export) by `t` along CLOTH3D's z-axis.
+        This is the z-up equivalent of partner's y-up
+        `--garment_y_translation`: their `(x,z,-y)` rotation maps the
+        original z onto y', so `+t` in y' corresponds to `+t` in z. The
+        SMPL body and the un-draped rest mesh are NOT lifted, matching
+        partner's `convert_from_cloth3d` semantics.
 
     Returns
     -------
@@ -108,6 +117,11 @@ def load_sample(
     C = np.concatenate(C_list, axis=0).astype(np.float32)
     vert_gid = np.concatenate(gid_list, axis=0).astype(np.int32)
 
+    drop_t = float(garment_y_translation)
+    if drop_t != 0.0:
+        V0 = V0 + np.array([0.0, 0.0, drop_t], dtype=np.float32)
+        print(f"[data] applying drop offset z+={drop_t:.3f} m to cloth V0")
+
     total_frames = get_num_frames(sample)
     n_body_frames = max(1, min(n_body_frames, total_frames))
     body_V_seq = np.empty((n_body_frames, 6890, 3), dtype=np.float32)
@@ -129,6 +143,7 @@ def load_sample(
         body_F=body_F,
         sample=sample,
         cloth_frame_dt=1.0 / 30.0,
+        garment_y_translation=drop_t,
     )
 
     if need_gt_trajectory:
@@ -139,7 +154,14 @@ def load_sample(
             for fi in range(n_body_frames):
                 Vg = reader.read_garment_vertices(sample, name, fi)
                 gt_seq[fi] = np.asarray(Vg, dtype=np.float32)
+            if drop_t != 0.0:
+                gt_seq = gt_seq + np.array(
+                    [0.0, 0.0, drop_t], dtype=np.float32
+                )
             gt_V_by_garment[name] = gt_seq
+        # The un-draped rest mesh is intentionally NOT lifted: the
+        # eval's `convert_from_cloth3d` writes `_V_rest_y` without the
+        # drop offset, and so do we.
         out["garment_V_rest"] = V_rest_by_garment
         out["gt_V_by_garment"] = gt_V_by_garment
         print(

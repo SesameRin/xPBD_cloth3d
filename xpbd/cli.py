@@ -82,6 +82,35 @@ def build_parser():
         default=os.path.join(_REPO, "xpbd_out", "cloth3d_data"),
         help="directory for --save_sample_npz output.",
     )
+
+    # Drop-experiment offset. Mirrors the teammate's
+    # `--garment_y_translation` flag in cloth3d_xpbd / cloth3d_sim: lift
+    # every cloth vertex (including the per-frame GT used by the export)
+    # by `+t` in the eval's y-up frame, which corresponds to `+t` along
+    # CLOTH3D's z-axis. Body and the un-draped rest mesh are NOT lifted.
+    # Use `3.0` to reproduce partner's drop run; leave at 0.0 for the
+    # original worn-cloth experiment.
+    p.add_argument(
+        "--garment_y_translation", type=float, default=0.0,
+        help="lift cloth (and GT trajectory) by t metres along CLOTH3D's "
+             "z-axis to mirror partner's drop experiment. "
+             "Use 3.0 for an apples-to-apples drop comparison.",
+    )
+    # Mirrors partner's --freeze_human_mesh on: pin the SMPL body
+    # collider at frame 0 instead of cycling through the body sequence.
+    # Uses argparse's tri-state pattern (default None) so we can
+    # auto-default it to True when --garment_y_translation is set, while
+    # still letting the user force it off with --no_freeze_body.
+    p.add_argument(
+        "--freeze_body", dest="freeze_body", action="store_true",
+        default=None,
+        help="hold the SMPL body at frame 0 for the whole sim "
+             "(default: auto-on whenever --garment_y_translation != 0).",
+    )
+    p.add_argument(
+        "--no_freeze_body", dest="freeze_body", action="store_false",
+        help="force body animation on even during drop runs.",
+    )
     return p
 
 
@@ -92,6 +121,14 @@ def main(argv=None):
 
     # back-compat: --garment takes precedence if explicitly passed
     garments_spec = args.garment if args.garment else args.garments
+
+    # Drop runs default to a frozen body collider. The user can flip
+    # this with --no_freeze_body. Worn-cloth runs leave it off so the
+    # body keeps animating as before.
+    if args.freeze_body is None:
+        args.freeze_body = bool(args.garment_y_translation)
+        if args.freeze_body:
+            print("[cli] --freeze_body auto-on (drop run)")
 
     # Auto-default body_frames and steps to the sample's full length
     # when the user doesn't specify (or passes -1). CLOTH3D stores one
@@ -111,6 +148,7 @@ def main(argv=None):
         garments_spec,
         n_body_frames=args.body_frames,
         need_gt_trajectory=args.save_npz,
+        garment_y_translation=args.garment_y_translation,
     )
 
     fabrics = data["garment_fabrics"]

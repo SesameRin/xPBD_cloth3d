@@ -15,6 +15,7 @@ top-level `README.md` is the cheat-sheet; this folder is the deep dive.
 | [`eval_export.md`](eval_export.md) | How to produce eval-compatible NPZ files consumable by the teammate's `cloth3d_benchmark` metrics pipeline. |
 | [`batch.md`](batch.md) | Batch mode: `python3 -m xpbd.batch` to run every CLOTH3D sample into one timestamped folder, then point the eval at it. |
 | [`cipc_comparison.md`](cipc_comparison.md) | The recipe for a like-for-like comparison run against the C-IPC cotton baseline. |
+| [`drop_experiment.md`](drop_experiment.md) | Match partner's IPC drop run (`--garment_y_translation 3.0`, `--experiment_protocol drop`) and run the cross-solver eval. |
 
 Suggested reading order if this is your first time:
 

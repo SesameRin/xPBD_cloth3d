@@ -42,6 +42,13 @@ python3 xpbd_cloth.py --sample 07414 --garments all \
 python3 xpbd_cloth.py --sample 00016 --garments all \
     --arch gpu --save_npz --save_sample_npz
 
+# Drop experiment: lift the cloth 3 m above the body and let it fall.
+# Mirrors partner's IPC drop run (--garment_y_translation 3.0 in y-up).
+python3 xpbd_cloth.py --sample 00007 --garments Tshirt \
+    --arch gpu --garment_y_translation 3.0 \
+    --save_npz --save_sample_npz \
+    --npz_out xpbd_out/results_xpbd_drop
+
 # Batch: simulate every sample under cloth3d/Samples/ into one timestamped folder.
 # --save_sample_npz defaults on here (pass --no_save_sample_npz to skip).
 python3 -m xpbd.batch --arch gpu
@@ -74,6 +81,8 @@ include every simulated garment, e.g. `07414_Trousers+Tshirt.mp4`.
 | `--npz_out` | `xpbd_out/results_xpbd` | output dir for `--save_npz` |
 | `--save_sample_npz` | off | also extract per-sample CLOTH3D `{sample}.npz` the eval reopens |
 | `--sample_npz_dir` | `xpbd_out/cloth3d_data` | output dir for `--save_sample_npz` |
+| `--garment_y_translation` | `0.0` | drop-experiment lift in metres along z (z-up); pass `3.0` to mirror partner's IPC drop. See [`docs/drop_experiment.md`](docs/drop_experiment.md) |
+| `--freeze_body` / `--no_freeze_body` | auto | hold the SMPL body collider at frame 0 (mirrors partner's `--freeze_human_mesh on`). Auto-on whenever `--garment_y_translation != 0`; force off with `--no_freeze_body`. |
 
 If you do not pass `--dist_compliance` / `--bend_compliance` /
 `--damping`, each garment uses the preset for its CLOTH3D fabric.

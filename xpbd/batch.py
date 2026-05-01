@@ -76,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--substeps", type=int, default=None)
     p.add_argument("--iters", type=int, default=None)
     p.add_argument("--force_fabric", default=None)
+    p.add_argument(
+        "--garment_y_translation", type=float, default=0.0,
+        help="drop-experiment lift in metres along z; passed through to "
+             "each sample run. Use 3.0 to mirror partner's drop batch.",
+    )
     # Default on: the downstream eval needs `{sample}.npz`, and extracting
     # it here is cheap relative to the sim itself. Pass `--no_save_sample_npz`
     # to skip if you only want simulation results.
@@ -119,6 +124,8 @@ def _build_child_command(args, sample: str, npz_out: str, sample_npz_dir: str) -
         cmd += ["--iters", str(args.iters)]
     if args.force_fabric:
         cmd += ["--force_fabric", args.force_fabric]
+    if args.garment_y_translation:
+        cmd += ["--garment_y_translation", str(args.garment_y_translation)]
     return cmd
 
 

@@ -12,9 +12,10 @@ Coordinate frame notes:
   frame (the same frame `cloth3d_eval.io_source.convert_from_cloth3d`
   rotates CLOTH3D into via `rotate_x_minus_90`).
 - `write_result_npz` therefore rotates every written vertex sequence
-  (sim, gt, human) from z-up to y-up, and records
-  `garment_y_translation = 0` so the eval source loader does not add an
-  extra offset.
+  (sim, gt, human) from z-up to y-up, and records the run's
+  `garment_y_translation` (the drop-experiment offset) so the eval's
+  source loader can lift its source-side GT to match our already-lifted
+  sim_V_seq.
 
 The companion helper `write_sample_npz` writes the per-sample extracted
 CLOTH3D data in z-up (raw CLOTH3D frame), because the eval's source
@@ -94,6 +95,7 @@ def write_result_npz(
     effective_gravity: Iterable[float] = (0.0, -9.81, 0.0),
     cloth_reference_shape: str = "rest",
     solver_name: str = "xPBD-Taichi-CMU",
+    garment_y_translation: float = 0.0,
     extra: dict | None = None,
 ) -> str:
     """Write one eval-compatible `{sample}_{garment}_sim.npz` file.
@@ -135,7 +137,10 @@ def write_result_npz(
         "wind_acceleration": np.zeros(3, dtype=np.float64),
         "effective_gravity": np.asarray(effective_gravity, dtype=np.float64),
         "cloth_reference_shape": str(cloth_reference_shape),
-        "garment_y_translation": 0.0,
+        # Eval reads this back via `run.extra.get("garment_y_translation")`
+        # in cloth3d_eval/io_source.py:46 to lift the source-side GT to
+        # the same frame as our (already-lifted) sim_V_seq.
+        "garment_y_translation": float(garment_y_translation),
         "contact_tolerance": 0.0,
         "cloth_simulation_method": 0,
         "cloth_bending_method": 0,

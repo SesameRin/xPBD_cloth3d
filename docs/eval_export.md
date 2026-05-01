@@ -57,6 +57,7 @@ Added in `xpbd/cli.py`:
 | `--npz_out DIR`      | `xpbd_out/results_xpbd` | where the per-garment files go |
 | `--save_sample_npz`  | off       | also extract the per-sample CLOTH3D NPZ |
 | `--sample_npz_dir DIR` | `xpbd_out/cloth3d_data` | where `{sample}.npz` goes |
+| `--garment_y_translation T` | `0.0` | lift cloth (`V0` and per-frame GT) by `T` m along z; recorded in the result NPZ so the eval picks the same offset up via `run.extra`. Use `3.0` for partner's drop run. |
 
 `--save_npz` overrides the viewer choice: it drives a headless sim via
 `viewers.run_export` that steps once per frame, snapshots `cloth.x`,

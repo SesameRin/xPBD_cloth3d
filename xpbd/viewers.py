@@ -32,12 +32,16 @@ def run_matplotlib(cloth, data, args):
 
     body_frames = data["body_V_seq"]
     n_body_frames = body_frames.shape[0]
+    freeze_body = bool(getattr(args, "freeze_body", False))
     F_cloth = data["F"]
     F_body = data["body_F"]
     C_cloth = data["C"]
 
-    bb_min = body_frames[0].min(axis=0) - 0.2
-    bb_max = body_frames[0].max(axis=0) + 0.2
+    # Combined bbox so the cloth (lifted in drop runs) and the body
+    # both fit in the initial view.
+    combined0 = np.vstack([data["V0"], body_frames[0]])
+    bb_min = combined0.min(axis=0) - 0.2
+    bb_max = combined0.max(axis=0) + 0.2
     ax.set_xlim(bb_min[0], bb_max[0])
     ax.set_ylim(bb_min[1], bb_max[1])
     ax.set_zlim(bb_min[2], bb_max[2])
@@ -69,12 +73,12 @@ def run_matplotlib(cloth, data, args):
     step_state = {"i": 0}
 
     def update(_):
-        if n_body_frames > 1:
+        if n_body_frames > 1 and not freeze_body:
             cloth.set_body(body_frames[step_state["i"] % n_body_frames])
         cloth.step()
         step_state["i"] += 1
         cloth_coll.set_verts(cloth.x.to_numpy()[F_cloth])
-        if n_body_frames > 1:
+        if n_body_frames > 1 and not freeze_body:
             body_coll.set_verts(
                 body_frames[step_state["i"] % n_body_frames][F_body]
             )
@@ -115,14 +119,21 @@ def run_gui(cloth, data, args):
     scene = window.get_scene()
     camera = ti.ui.Camera()
 
-    center = data["V0"].mean(axis=0)
-    camera.position(center[0] + 2.5, center[1] - 2.5, center[2] + 0.3)
+    body_frames = data["body_V_seq"]
+    n_body_frames = body_frames.shape[0]
+    freeze_body = bool(getattr(args, "freeze_body", False))
+
+    # Frame both meshes. In drop runs the cloth starts metres above the
+    # body, so centring on the cloth alone (the old default) put the
+    # body below the view frustum and the user saw "only cloth".
+    combined0 = np.vstack([data["V0"], body_frames[0]])
+    center = combined0.mean(axis=0)
+    extent = float(np.linalg.norm(combined0.max(axis=0) - combined0.min(axis=0)))
+    cam_dist = max(2.5, 0.7 * extent)
+    camera.position(center[0] + cam_dist, center[1] - cam_dist, center[2] + 0.3)
     camera.lookat(center[0], center[1], center[2])
     camera.up(0, 0, 1)
     camera.fov(45)
-
-    body_frames = data["body_V_seq"]
-    n_body_frames = body_frames.shape[0]
 
     step_idx = 0
     paused = False
@@ -145,7 +156,7 @@ def run_gui(cloth, data, args):
                 show_body = not show_body
 
         if not paused:
-            if n_body_frames > 1:
+            if n_body_frames > 1 and not freeze_body:
                 cloth.set_body(body_frames[step_idx % n_body_frames])
             cloth.step()
             step_idx += 1
@@ -192,9 +203,10 @@ def run_headless(cloth, data, args):
     os.makedirs(args.out, exist_ok=True)
     body_frames = data["body_V_seq"]
     n_body_frames = body_frames.shape[0]
+    freeze_body = bool(getattr(args, "freeze_body", False))
     stem = video_stem(data)
     for i in range(args.steps):
-        if n_body_frames > 1:
+        if n_body_frames > 1 and not freeze_body:
             cloth.set_body(body_frames[i % n_body_frames])
         cloth.step()
         if i % args.save_every == 0:
@@ -231,6 +243,7 @@ def run_export(cloth, data, args):
 
     body_frames = data["body_V_seq"]
     n_body_frames = body_frames.shape[0]
+    freeze_body = bool(getattr(args, "freeze_body", False))
     n_frames = min(int(args.steps), n_body_frames)
     if n_frames < int(args.steps):
         print(
@@ -247,7 +260,7 @@ def run_export(cloth, data, args):
     V_per_frame = np.empty((n_frames, cloth.x.shape[0], 3), dtype=np.float32)
     frame_ms = np.empty(n_frames, dtype=np.float64)
     for i in range(n_frames):
-        if n_body_frames > 1:
+        if n_body_frames > 1 and not freeze_body:
             cloth.set_body(body_frames[i % n_body_frames])
         t0 = time.perf_counter()
         cloth.step()
@@ -305,6 +318,7 @@ def run_export(cloth, data, args):
             effective_gravity=(0.0, -9.81, 0.0),
             cloth_reference_shape="rest",
             solver_name="xPBD-Taichi-CMU",
+            garment_y_translation=float(getattr(args, "garment_y_translation", 0.0)),
         )
         written.append(path)
         print(f"[export] wrote {path}")
