@@ -9,3 +9,4 @@ xpbd_out/
 xpbd_out/*.npy
 
 CLAUDE.md
+.claude/
