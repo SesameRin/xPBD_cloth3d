@@ -8,7 +8,7 @@ dataset. Loads a sample, simulates every garment in its outfit at once
 with **fabric-aware** parameters, and renders through GGUI / matplotlib
 / headless `.npy` dumps.
 
-> **Want to understand the code, not just run it?** Start with
+> **Understand the code:** Start with
 > [`docs/README.md`](docs/README.md) — module map, data flow, the XPBD
 > math, fabric tuning, and the C-IPC comparison recipe.
 
