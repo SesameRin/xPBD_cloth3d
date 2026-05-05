@@ -1,5 +1,7 @@
 # XPBD Cloth on CLOTH3D
 
+Note: This repo is the xpbd part of the cloth3d solver benchmark. For the full benchmark codebase, see https://github.com/wuwenglei/cloth3d-ipc-xpbd/.
+
 A Taichi [XPBD](https://matthias-research.github.io/pages/publications/XPBD.pdf)
 cloth simulator for the [CLOTH3D](https://chalearnlap.cvc.uab.es/dataset/38/description/)
 dataset. Loads a sample, simulates every garment in its outfit at once
