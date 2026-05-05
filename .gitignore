@@ -7,3 +7,5 @@ xpbd_out/
 
 # transient simulation dumps; keep mp4 demos in xpbd_out/
 xpbd_out/*.npy
+
+CLAUDE.md
