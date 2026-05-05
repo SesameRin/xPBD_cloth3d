@@ -21,6 +21,34 @@ pip install taichi numpy scipy pillow plotly tqdm matplotlib imageio-ffmpeg
 Samples must live under `cloth3d/Samples/<id>/` (same layout as shipped).
 Bundled samples: `00016`, `01691`, `03543`, `06840`, `07414`.
 
+## CLOTH3D starter kit
+
+The `cloth3d/` toolkit (DataReader, Demo, sample data) comes from the
+official CLOTH3D starter kit. To set it up from scratch:
+
+1. Go to the dataset page:
+   <https://chalearnlap.cvc.uab.cat/dataset/38/description/>.
+2. Register / log in, then download the **Starter Kit** archive from
+   the *Files* section.
+3. Unzip it into the repo's `cloth3d/` folder so the layout becomes:
+
+   ```
+   cloth3d/
+     DataReader/
+     Demo/
+     Samples/<id>/...
+     requirements.txt
+   ```
+
+   ```bash
+   unzip cloth3d_starter_kit.zip -d cloth3d/
+   ```
+
+   Adjust the archive name to whatever the site delivers; if it
+   unzips into a nested directory, move its contents up one level so
+   `cloth3d/DataReader/` and `cloth3d/Samples/` sit at the top of
+   `cloth3d/`.
+
 ## Run
 
 ```bash
